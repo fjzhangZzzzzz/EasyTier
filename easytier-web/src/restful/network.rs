@@ -1166,6 +1166,7 @@ mod tests {
                         tokens: vec![],
                     });
                     let config = super::super::ConsoleInfoConfig {
+                        config_server_public_url: None,
                         config_server_protocol: "tcp".into(),
                         config_server_port: 22020,
                         webhook_auth: true,
