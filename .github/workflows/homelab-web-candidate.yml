@@ -27,8 +27,8 @@ jobs:
       - name: 安装构建依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y build-essential mold protobuf-compiler libclang-dev cmake pkg-config libssl-dev
-          rustup toolchain install 1.95 --profile minimal --component rustfmt
+          sudo apt-get install -y build-essential mold musl-tools protobuf-compiler libclang-dev cmake pkg-config libssl-dev
+          rustup toolchain install 1.95 --profile minimal --component rustfmt --target x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: homelab-web-linux
@@ -46,27 +46,35 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           node --test tests/dashboard.test.mjs
       - name: 构建 Linux 候选
-        run: cargo +1.95 build --locked --release -p easytier-web --features embed
+        run: |
+          cargo +1.95 build --locked --release --target x86_64-unknown-linux-musl -p easytier-web --features embed
+          target/x86_64-unknown-linux-musl/release/easytier-web --version
       - name: 整理候选（不创建 Release、不部署）
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           python3 - <<'PY'
-          import hashlib, json, os, pathlib, shutil, tarfile
+          import hashlib, json, os, pathlib, shutil, struct, tarfile
           root = pathlib.Path('candidate')
           root.mkdir()
           metadata = json.loads(pathlib.Path('HOMELAB_FORK.json').read_text())
-          metadata.update(git_commit=os.environ['SOURCE_COMMIT'], target='x86_64-unknown-linux-gnu', profile='release', ci_only=True)
-          shutil.copy2('target/release/easytier-web', root / 'easytier-web')
+          metadata.update(git_commit=os.environ['SOURCE_COMMIT'], target='x86_64-unknown-linux-musl', profile='release', ci_only=True)
+          binary = pathlib.Path('target/x86_64-unknown-linux-musl/release/easytier-web')
+          header = binary.read_bytes()
+          assert header[:6] == b'\x7fELF\x02\x01'
+          offset = struct.unpack_from('<Q', header, 32)[0]
+          size, count = struct.unpack_from('<HH', header, 54)
+          assert all(struct.unpack_from('<I', header, offset + size * i)[0] != 3 for i in range(count)), 'unexpected dynamic loader'
+          shutil.copy2(binary, root / 'easytier-web')
           shutil.copy2('HOMELAB_FORK.md', root / 'HOMELAB_FORK.md')
           shutil.copy2('LICENSE', root / 'LICENSE')
           (root / 'RELEASE.json').write_text(json.dumps(metadata, indent=2) + '\n')
           (root / 'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in sorted(root.iterdir()) if p.is_file()))
-          with tarfile.open(f"easytier-web-{metadata['candidate_version']}-linux-x86_64-{metadata['git_commit'][:12]}.tar.gz", 'w:gz') as archive:
+          with tarfile.open(f"easytier-web-{metadata['candidate_version']}-linux-x86_64-musl-{metadata['git_commit'][:12]}.tar.gz", 'w:gz') as archive:
               archive.add(root, arcname=f"easytier-web-{metadata['candidate_version']}")
           PY
       - uses: actions/upload-artifact@v4
         with:
           name: easytier-web-linux-amd64-${{ github.sha }}
-          path: easytier-web-*-linux-x86_64-*.tar.gz
+          path: easytier-web-*-linux-x86_64-musl-*.tar.gz
           retention-days: 14
