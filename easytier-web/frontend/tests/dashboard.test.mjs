@@ -286,6 +286,7 @@ for (const action of ['creation', 'settings']) {
         }
 
         if (action === 'creation') {
+            assert.equal(await page.locator('#create-secure-mode').isChecked(), true);
             await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
             await page.waitForURL('**/networks/created-*');
         } else {
@@ -509,6 +510,7 @@ test('member editing, adding and removal keep existing request semantics', async
     await page.getByRole('row').filter({ hasText: 'gateway-west' }).waitFor();
     assert.equal(state.members[0].virtual_ipv4, '10.126.126.20');
     await page.getByRole('button', { name: 'Add Devices' }).click();
+    await page.getByTestId('shared-secret-warning').waitFor();
     await page.getByRole('dialog').getByRole('row').filter({ hasText: 'Build server' }).getByRole('checkbox').check();
     await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.getByRole('row').filter({ hasText: 'Added device' }).waitFor();

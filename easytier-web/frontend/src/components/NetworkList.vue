@@ -52,7 +52,7 @@ const creating = ref(false);
 const createForm = ref({
     display_name: '',
     virtual_cidr: '',
-    secure_mode: false,
+    secure_mode: true,
 });
 // Initial nodes in advanced mode, same model as the GUI config form.
 const initialNodes = ref<string[]>([]);
@@ -98,10 +98,8 @@ const openCreate = () => {
     createForm.value = {
         display_name: '',
         virtual_cidr: '',
-        // The built-in gateway speaks the Noise handshake; third-party
-        // peers of advanced networking may not, so secure mode defaults on
-        // for gateway networks only.
-        secure_mode: gatewayEnabled.value,
+        // 新网络默认支持普通终端独立凭据；兼容旧节点时仍可明确关闭。
+        secure_mode: true,
     };
     advancedMode.value = !gatewayEnabled.value;
     initialNodes.value =

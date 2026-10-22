@@ -304,6 +304,7 @@ const settingsForm = ref({
 // means Standalone.
 const initialNodes = ref<string[]>([]);
 const peerKeys = ref<Record<string, string>>({});
+const hasConfiguredPins = () => initialNodes.value.some(uri => peerKeys.value[uri]?.trim());
 const settingsLoaded = ref(false);
 const savingSettings = ref(false);
 
@@ -313,7 +314,7 @@ const protos = NetworkTypes.PEER_PROTOCOLS;
 
 const gatewayFollowed = () =>
     gatewayInfo.value?.enabled === true
-    && !Object.values(peerKeys.value).some(key => key.trim())
+    && !hasConfiguredPins()
     && initialNodes.value.length === 1
     && initialNodes.value[0] === gatewayInfo.value?.peer_url;
 
@@ -360,7 +361,7 @@ const saveSettings = async () => {
         // Keeping exactly the gateway URL as the only initial node preserves
         // the Gateway mode (the compiled peer list follows the gateway URL);
         // anything else compiles to Manual peers, or Standalone when empty.
-        const method = network.value?.networking_method === 'PublicServer' && initialNodes.value.length === 1 && !Object.values(peerKeys.value).some(key => key.trim()) ? 'PublicServer'
+        const method = network.value?.networking_method === 'PublicServer' && initialNodes.value.length === 1 && !hasConfiguredPins() ? 'PublicServer'
             : gatewayFollowed() ? 'Gateway'
             : initialNodes.value.length > 0 ? 'Manual' : 'Standalone';
         const settings = {
@@ -791,13 +792,14 @@ const credentialJoinToml = (secret: string) => {
 
 type JoinFormat = 'cli' | 'toml';
 const joinFormat = ref<JoinFormat>('cli');
+const hasPinnedPeers = computed(() => network.value?.peers?.some(peer => peer.peer_public_key) ?? false);
+watch(hasPinnedPeers, pinned => { if (pinned) joinFormat.value = 'toml'; });
 const joinFormatOptions = computed(() => hasPinnedPeers.value ? [
     { label: t('web.network_detail.credential_join_toml'), value: 'toml' },
 ] : [
     { label: t('web.network_detail.credential_join_cli'), value: 'cli' },
     { label: t('web.network_detail.credential_join_toml'), value: 'toml' },
 ]);
-const hasPinnedPeers = computed(() => network.value?.peers?.some(peer => peer.peer_public_key) ?? false);
 const joinText = (secret: string) =>
     joinFormat.value === 'cli' && !hasPinnedPeers.value ? credentialJoinCommand(secret) : credentialJoinToml(secret);
 
@@ -1241,6 +1243,9 @@ const switchTab = async (tab: string) => {
                         ? t('web.network_detail.add_temporary_hint')
                         : t('web.network_detail.add_temporary_needs_secure')"></span>
                 </div>
+                <Message v-if="!network?.secure_mode" severity="warn" :closable="false" data-testid="shared-secret-warning">
+                    当前网络未开启安全模式，加入设备会收到共享主密钥。普通访问终端请先在网络设置中开启安全模式。
+                </Message>
                 <div v-if="addTemporary" class="flex items-center gap-2">
                     <label for="add-ttl" class="text-sm">{{ t('web.network_detail.credential_ttl') }}</label>
                     <SelectButton v-model="addTtlHours" :options="addTtlOptions"

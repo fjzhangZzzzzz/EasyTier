@@ -1,5 +1,5 @@
 {
-  "candidate_version": "0.1.0-rc.1",
+  "candidate_version": "0.1.0-rc.2",
   "status": "isolated-candidate",
   "upstream_repository": "https://github.com/EasyTier/EasyTier",
   "upstream_commit": "54f2850d9d3cc42eb93e0d44d19bed5d9fbf2d0a",

@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: homelab-web-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   linux-web:
@@ -29,6 +29,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y build-essential mold protobuf-compiler libclang-dev cmake pkg-config libssl-dev
           rustup toolchain install 1.95 --profile minimal --component rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: homelab-web-linux
       - name: 校验 Rust 格式与 Web 回归
         run: |
           cargo +1.95 fmt -p easytier-web --check
