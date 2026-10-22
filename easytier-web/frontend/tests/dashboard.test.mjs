@@ -814,6 +814,14 @@ test('Manual peer public keys survive settings save, reload and credential expor
     await page.reload();
     await page.getByRole('tab', { name: 'Settings', exact: true }).click();
     assert.equal(await input.inputValue(), key);
+    await page.locator('#settings-initial-nodes input.grow').first().fill('192.0.2.2');
+    const editedPeer = 'tcp://192.0.2.2:11010';
+    assert.equal(await page.getByLabel(`${editedPeer} · 节点公钥（可选）`).inputValue(), key);
+    const edited = page.waitForResponse(response => response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await edited;
+    assert.deepEqual(state.writes.filter(write => write.method === 'PATCH').at(-1).payload.settings.peers,
+        [{ uri: editedPeer, peer_public_key: key }]);
     await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
     await page.getByRole('button', { name: 'Show join command', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Temporary device join command' });
