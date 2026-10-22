@@ -196,6 +196,7 @@ export interface CreatedDeviceToken {
 }
 
 export interface ConsoleInfo {
+    config_server_public_url?: string;
     username: string;
     config_server_protocol: string;
     config_server_port: number;

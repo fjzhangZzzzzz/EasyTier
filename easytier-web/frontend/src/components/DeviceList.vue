@@ -43,7 +43,10 @@ watch(viewMode, (mode) => localStorage.setItem('deviceList.viewMode', mode));
 // the enrollment command right there.
 const enrollInfo = ref<Awaited<ReturnType<ApiClient['get_console_info']>> | null>(null);
 const enrollCommand = computed(() => {
-    if (!enrollInfo.value) return '';
+    if (!enrollInfo.value?.webhook_auth) return '';
+    if (enrollInfo.value.config_server_public_url) {
+        return `easytier-core --config-server ${enrollInfo.value.config_server_public_url.replace(/\/$/, '')}/${encodeURIComponent(enrollInfo.value.username)}`;
+    }
     const host = window.location.hostname;
     const { config_server_protocol: proto, config_server_port: port, username } = enrollInfo.value;
     return `easytier-core --config-server ${proto}://${host}:${port}/${username}`;

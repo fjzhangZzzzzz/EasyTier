@@ -211,6 +211,9 @@ pub struct WebhookOptions {
 
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct FeatureFlags {
+    /// 反向代理对外公布的 WSS 基础地址；不改变内部监听地址。
+    #[arg(long, env = "ET_CONFIG_SERVER_PUBLIC_URL", value_parser = parse_public_config_url)]
+    pub config_server_public_url: Option<String>,
     /// Whether user registration via the web UI is disabled.
     #[arg(
         long,
@@ -238,6 +241,44 @@ pub struct FeatureFlags {
         help = t!("cli.disallow_username_tokens").to_string()
     )]
     pub disallow_username_tokens: bool,
+}
+
+fn parse_public_config_url(value: &str) -> Result<String, String> {
+    let url = url::Url::parse(value).map_err(|_| "invalid public configuration URL")?;
+    if url.scheme() != "wss"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "public configuration URL must be WSS without credentials, query or fragment".into(),
+        );
+    }
+    Ok(url.to_string().trim_end_matches('/').to_owned())
+}
+
+#[cfg(test)]
+mod public_config_url_tests {
+    use super::parse_public_config_url;
+
+    #[test]
+    fn only_explicit_tls_endpoints_without_embedded_secrets_are_advertised() {
+        assert_eq!(
+            parse_public_config_url("wss://et.example.test/config/").unwrap(),
+            "wss://et.example.test/config"
+        );
+        for value in [
+            "ws://et.example.test/",
+            "https://et.example.test/",
+            "wss://u:p@et.example.test/",
+            "wss://et.example.test/?token=x",
+            "wss://et.example.test/#x",
+        ] {
+            assert!(parse_public_config_url(value).is_err());
+        }
+    }
 }
 
 impl LoggingConfigLoader for &Cli {

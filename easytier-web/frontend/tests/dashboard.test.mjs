@@ -84,7 +84,7 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         let result = {};
         if (path === '/device-tokens') result = { tokens: [{ id: 1, name: 'work', token: 'test-device-token', revoked_at: null }] };
         else if (path === '/summary') result = { device_count: state.machines.length };
-        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
+        else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, config_server_public_url: state.publicConfigUrl, webhook_auth: state.externalConsole ?? false };
         else if (path === '/machines') result = { machines: state.machines };
         else if (path === '/networks/gateway-info') {
             await delay(state.gatewayDelay);
@@ -165,6 +165,13 @@ test('enrollment command uses the console info response', async t => {
     const { page } = await open(t);
     await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
     await page.getByText('easytier-core --config-server udp://127.0.0.1:22020/test-device-token').waitFor();
+});
+
+test('enrollment behind TLS proxy uses the public WSS endpoint without raw listener port', async t => {
+    const { page } = await open(t, '/h', {}, state => { state.publicConfigUrl = 'wss://et.example.test/config'; });
+    await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
+    await page.getByText('easytier-core --config-server wss://et.example.test/config/test-device-token', { exact: true }).waitFor();
+    assert.equal(await page.getByText('ws://et.example.test:22020', { exact: false }).count(), 0);
 });
 
 for (const [apiHost, hostname] of [

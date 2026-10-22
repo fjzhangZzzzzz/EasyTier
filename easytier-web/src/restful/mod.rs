@@ -68,6 +68,7 @@ struct GetSummaryJsonResp {
 
 #[derive(Clone)]
 struct ConsoleInfoConfig {
+    config_server_public_url: Option<String>,
     config_server_protocol: String,
     config_server_port: u16,
     webhook_auth: bool,
@@ -75,6 +76,8 @@ struct ConsoleInfoConfig {
 
 #[derive(serde::Serialize)]
 struct GetConsoleInfoJsonResp {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_server_public_url: Option<String>,
     username: String,
     config_server_protocol: String,
     config_server_port: u16,
@@ -219,6 +222,7 @@ impl RestfulServer {
         };
 
         Ok(GetConsoleInfoJsonResp {
+            config_server_public_url: config.config_server_public_url,
             username: user.db_user.username,
             config_server_protocol: config.config_server_protocol,
             config_server_port: config.config_server_port,
@@ -359,6 +363,7 @@ impl RestfulServer {
             .layer(Extension(self.central_service.clone()))
             .layer(Extension(self.oidc_config.clone()))
             .layer(Extension(ConsoleInfoConfig {
+                config_server_public_url: self.feature_flags.config_server_public_url.clone(),
                 config_server_protocol: self.config_server_protocol.clone(),
                 config_server_port: self.config_server_port,
                 webhook_auth: self.webhook_config.has_external_endpoint(),
