@@ -142,7 +142,7 @@ const installCommand = computed(() => {
         return `f=$(mktemp); curl -fsSL ${quote(origin + '/install/easytier.sh')} -o "$f" && sudo bash "$f" ${quote(url)}; r=$?; rm -f -- "$f"; (exit "$r")`;
     }
     const psQuote = (text: string) => "'" + text.replace(/'/g, "''") + "'";
-    return `& { $ErrorActionPreference='Stop'; $f=Join-Path $env:TEMP ([guid]::NewGuid().ToString()+'.ps1'); Invoke-WebRequest -UseBasicParsing ${psQuote(origin + '/install/easytier.ps1')} -OutFile $f; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -ConfigUrl ${psQuote(url)} } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue } }`;
+    return `& { $ErrorActionPreference='Stop'; $f=Join-Path $env:TEMP ([guid]::NewGuid().ToString()+'.ps1'); Invoke-WebRequest -UseBasicParsing ${psQuote(origin + '/install/easytier.ps1')} -OutFile $f; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -ConfigUrl ${psQuote(url)}; $installExitCode=$LASTEXITCODE } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }; if ($installExitCode -ne 0) { throw ('安装失败，退出码 '+$installExitCode) } }`;
 });
 const copyInstallCommand = async () => {
     try { await navigator.clipboard.writeText(installCommand.value); toast.add({ severity: 'success', summary: t('web.common.confirm'), life: 1500 }); }

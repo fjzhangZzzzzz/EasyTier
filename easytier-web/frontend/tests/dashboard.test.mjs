@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
@@ -862,6 +862,16 @@ test('enrollment offers a pinned installer for Windows and Linux using only the 
     await panel.waitFor();
     assert.match(await panel.locator('code').textContent(), /https:\/\/et.example.test\/install\/easytier.ps1/);
     assert.match(await panel.locator('code').textContent(), /wss:\/\/et.example.test\/config\/test-device-token/);
+    if (process.platform === 'win32') {
+        const command = await panel.locator('code').textContent();
+        for (const exitCode of [0, 7]) {
+            // 用无网络替身模拟下载与安装；实际 PowerShell 执行生成的命令及 finally。
+            const preamble = `function Invoke-WebRequest { param([switch]$UseBasicParsing,[string]$Uri,[string]$OutFile); Set-Content -LiteralPath $OutFile -Value '# fixture' }; function powershell.exe { $global:LASTEXITCODE=${exitCode} }; `;
+            const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', preamble + `try { ${command}; exit 0 } catch { exit 7 }`], { encoding: 'utf8' });
+            assert.equal(result.status, exitCode, 'installer failure must survive temporary-file cleanup');
+        }
+    }
+
     await page.getByRole('combobox', { name: '安装系统' }).click();
     await page.getByRole('option', { name: 'Linux x86_64' }).click();
     assert.match(await panel.locator('code').textContent(), /sudo bash/);
