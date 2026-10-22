@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n';
 import { NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
 import ApiClient, { type CentralNetworkSettings, type CentralNetworkSummary, type GatewayInfo } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
+import PeerPublicKeys from './PeerPublicKeys.vue';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -55,6 +56,7 @@ const createForm = ref({
 });
 // Initial nodes in advanced mode, same model as the GUI config form.
 const initialNodes = ref<string[]>([]);
+const peerKeys = ref<Record<string, string>>({});
 
 const loadNetworks = async () => {
     if (refreshing.value) return;
@@ -92,6 +94,7 @@ onUnmounted(() => {
 });
 
 const openCreate = () => {
+    peerKeys.value = {};
     createForm.value = {
         display_name: '',
         virtual_cidr: '',
@@ -128,6 +131,7 @@ const createNetwork = async () => {
                 networking_method: initialNodes.value.length > 0 ? 'Manual' : 'Standalone',
                 public_server_url: null,
                 peer_urls: initialNodes.value,
+                peers: initialNodes.value.map(uri => ({ uri, peer_public_key: peerKeys.value[uri]?.trim() || null })),
                 virtual_cidr,
                 secure_mode: createForm.value.secure_mode,
             };
@@ -231,6 +235,7 @@ const openNetwork = (network: CentralNetworkSummary) => {
                         <UrlListInput id="initial-nodes" v-model="initialNodes" :protos="protos"
                             defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
                             :placeholder="t('initial_node_placeholder')" />
+                        <PeerPublicKeys v-model="peerKeys" :urls="initialNodes" />
                     </div>
                 </template>
                 <div v-if="gatewayEnabled" class="text-sm">

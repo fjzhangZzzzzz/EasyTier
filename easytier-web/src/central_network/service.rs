@@ -19,8 +19,8 @@ use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter as _, QueryOrder a
 use uuid::Uuid;
 
 use super::model::{
-    AclPolicy, CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-    NetworkMode, member_group_name,
+    AclPolicy, CentralNetworkIntent, CredentialGrant, ManualPeer, NetworkCredentialIntent,
+    NetworkMemberIntent, NetworkMode, member_group_name,
 };
 pub use super::temporary_peers::TemporaryPeerInfo;
 use crate::{
@@ -77,6 +77,8 @@ pub struct NetworkSettings {
     pub public_server_url: Option<String>,
     #[serde(default)]
     pub peer_urls: Vec<String>,
+    #[serde(default)]
+    pub peers: Option<Vec<ManualPeer>>,
     pub virtual_cidr: Option<String>,
     #[serde(default)]
     pub secure_mode: bool,
@@ -162,6 +164,8 @@ pub struct NetworkDetail {
     pub secure_mode: bool,
     pub public_server_url: Option<String>,
     pub peer_urls: Vec<String>,
+    #[serde(default)]
+    pub peers: Vec<ManualPeer>,
     pub member_count: usize,
 }
 
@@ -431,6 +435,10 @@ impl CentralNetworkService {
             secure_mode: intent.secure_mode,
             public_server_url,
             peer_urls,
+            peers: match &intent.mode {
+                NetworkMode::Manual { peers, .. } => peers.clone(),
+                _ => Vec::new(),
+            },
             member_count: intent.members.len(),
         })
     }
@@ -444,7 +452,38 @@ impl CentralNetworkService {
         let _mutation = self.mutation_lock.lock().await;
         request.settings.normalize_virtual_cidr();
         let mut intent = self.load(user_id, network_id).await?;
-        let mode = mode_from_settings(&request.settings, self.gateway_config())?;
+        let mut mode = mode_from_settings(&request.settings, self.gateway_config())?;
+        if request.settings.peers.is_none() {
+            if let NetworkMode::Manual {
+                peer_urls: old_urls,
+                peers,
+            } = &intent.mode
+            {
+                if peers.iter().any(|peer| peer.peer_public_key.is_some()) {
+                    let NetworkMode::Manual {
+                        peer_urls,
+                        peers: next_peers,
+                    } = &mut mode
+                    else {
+                        return Err(CentralNetworkServiceError::Invalid(
+                            "explicit peers required to change pinned networking mode".into(),
+                        ));
+                    };
+                    let mut old_urls = old_urls.clone();
+                    old_urls.sort();
+                    old_urls.dedup();
+                    let mut new_urls = peer_urls.clone();
+                    new_urls.sort();
+                    new_urls.dedup();
+                    if old_urls != new_urls {
+                        return Err(CentralNetworkServiceError::Invalid(
+                            "explicit peers required to change pinned nodes".into(),
+                        ));
+                    }
+                    *next_peers = peers.clone();
+                }
+            }
+        }
         intent.display_name = request.settings.display_name;
         if let Some(network_name) = request.settings.network_name {
             intent.network_name = network_name;
@@ -1215,6 +1254,7 @@ fn mode_from_settings(
             .ok_or_else(|| CentralNetworkServiceError::Invalid("missing public server URL".into())),
         "Manual" | "manual" => Ok(NetworkMode::Manual {
             peer_urls: settings.peer_urls.clone(),
+            peers: settings.peers.clone().unwrap_or_default(),
         }),
         "Standalone" | "standalone" => Ok(NetworkMode::Standalone),
         "Gateway" | "gateway" => gateway_config
@@ -1233,7 +1273,7 @@ fn mode_from_settings(
 fn mode_view(mode: &NetworkMode) -> (String, Option<String>, Vec<String>) {
     match mode {
         NetworkMode::PublicServer { url } => ("PublicServer".into(), Some(url.clone()), Vec::new()),
-        NetworkMode::Manual { peer_urls } => ("Manual".into(), None, peer_urls.clone()),
+        NetworkMode::Manual { peer_urls, .. } => ("Manual".into(), None, peer_urls.clone()),
         NetworkMode::Standalone => ("Standalone".into(), None, Vec::new()),
         NetworkMode::Gateway { peer_url } => ("Gateway".into(), None, vec![peer_url.clone()]),
     }
@@ -1563,6 +1603,7 @@ mod tests {
             networking_method: "Standalone".to_owned(),
             public_server_url: None,
             peer_urls: Vec::new(),
+            peers: None,
             virtual_cidr: Some("10.88.0.0/24".to_owned()),
             secure_mode: true,
         }
@@ -1574,6 +1615,55 @@ mod tests {
             peer_urls,
             ..standalone_settings()
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_settings_preserve_pins_and_cannot_silently_change_nodes() {
+        let (service, owner, _) = service().await;
+        let mut settings = standalone_settings();
+        settings.networking_method = "Manual".into();
+        settings.peer_urls = vec!["tcp://127.0.0.1:11010".into()];
+        settings.peers = Some(vec![ManualPeer {
+            uri: settings.peer_urls[0].clone(),
+            peer_public_key: Some(base64::engine::general_purpose::STANDARD.encode([7u8; 32])),
+        }]);
+        let original = service
+            .create_network(owner, settings.clone(), None)
+            .await
+            .unwrap();
+        let network = Uuid::parse_str(&original.network_id).unwrap();
+        settings.peers = None;
+        settings.display_name = "renamed".into();
+        let renamed = service
+            .update_network(
+                owner,
+                network,
+                UpdateNetworkReq {
+                    settings: settings.clone(),
+                    network_secret: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.peers, original.peers);
+        settings.peer_urls = vec!["tcp://127.0.0.1:11011".into()];
+        assert!(
+            service
+                .update_network(
+                    owner,
+                    network,
+                    UpdateNetworkReq {
+                        settings,
+                        network_secret: None
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            service.get_network(owner, network).await.unwrap().peers,
+            original.peers
+        );
     }
 
     #[tokio::test]

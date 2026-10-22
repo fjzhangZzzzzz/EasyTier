@@ -39,6 +39,7 @@ impl WebhookHandler for DeviceAuth {
         request: &ValidateTokenRequest,
     ) -> anyhow::Result<ValidateTokenResponse> {
         let mut response = ValidateTokenResponse {
+            local_user_id: None,
             valid: false,
             pre_approved: false,
             binding_version: 0,
@@ -83,6 +84,7 @@ impl WebhookHandler for DeviceAuth {
             })
             .await?;
         response.valid = true;
+        response.local_user_id = Some(user_id);
         response.pre_approved = true;
         response.config_revision = self
             .db
@@ -105,17 +107,12 @@ impl DeviceAuth {
         machine_id: Uuid,
     ) -> anyhow::Result<Option<UserIdInDb>> {
         if let Some(record) = self.db.find_device_token(&request.token).await? {
-            if record.revoked_at.is_some() {
+            if !self
+                .db
+                .claim_device_token_machine(record.id, machine_id)
+                .await?
+            {
                 return Ok(None);
-            }
-            match record.machine_id {
-                Some(bound) if bound != machine_id => return Ok(None),
-                Some(_) => self.db.touch_device_token(record.id).await?,
-                None => {
-                    self.db
-                        .bind_device_token_machine(record.id, machine_id)
-                        .await?;
-                }
             }
             return Ok(Some(record.user_id));
         }
@@ -166,9 +163,10 @@ mod tests {
         .expect("local device authentication did not converge");
     }
 
-    async fn start_config_server(db: Db) -> (ClientManager, url::Url) {
-        let webhook = WebhookConfig::new(None, None, None, None, None)
-            .with_handler(Arc::new(DeviceAuth::new(db.clone(), false)));
+    async fn start_config_server(db: Db, strict: bool) -> (ClientManager, url::Url) {
+        let webhook = WebhookConfig::new(None, None, None, None, None).with_handler(Arc::new(
+            DeviceAuth::new(db.clone(), false).with_disallow_username_tokens(strict),
+        ));
         let mut manager = ClientManager::new(
             db,
             None,
@@ -186,15 +184,29 @@ mod tests {
 
     #[tokio::test]
     async fn web_client_registers_receives_full_config_and_cannot_reconnect_when_blocked() {
+        exercise_real_client(false).await;
+    }
+
+    #[tokio::test]
+    async fn issued_token_real_client_receives_owner_config_without_creating_token_account() {
+        exercise_real_client(true).await;
+    }
+
+    async fn exercise_real_client(strict: bool) {
         let db = Db::memory_db().await;
         let user_id = db.auto_create_user("local-owner").await.unwrap().id;
+        let token = if strict {
+            db.create_device_token(user_id, "work").await.unwrap().token
+        } else {
+            "local-owner".to_owned()
+        };
         let machine_id = Uuid::new_v4();
         let instance_id = Uuid::new_v4();
         let core = Arc::new(native_instance_manager());
-        let (manager, url) = start_config_server(db.clone()).await;
+        let (manager, url) = start_config_server(db.clone(), strict).await;
         let client = WebClient::new(
             runtime_udp_tunnel_dialer(url),
-            "local-owner",
+            &token,
             machine_id,
             "local-device",
             false,
@@ -249,6 +261,9 @@ mod tests {
         })
         .await;
         assert_eq!(core.config_source(instance_id), Some(ConfigSource::Web));
+        if strict {
+            assert!(db.get_user_id_by_token(&token).await.unwrap().is_none());
+        }
 
         // Stop the original connection before deleting it. This exercises a
         // fresh authentication, without depending on in-flight revocation.
@@ -260,10 +275,10 @@ mod tests {
         db.delete_device_with_optional_block((user_id, machine_id), true)
             .await
             .unwrap();
-        let (manager, url) = start_config_server(db.clone()).await;
+        let (manager, url) = start_config_server(db.clone(), strict).await;
         let _blocked_client = WebClient::new(
             runtime_udp_tunnel_dialer(url),
-            "local-owner",
+            &token,
             machine_id,
             "blocked-device",
             false,
@@ -368,6 +383,129 @@ mod tests {
         assert_eq!(
             user_id,
             db.get_user_id_by_token("owner").await.unwrap().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a separately verified official Core via EASYTIER_TEST_OFFICIAL_CORE"]
+    async fn official_core_enrolls_persists_pins_and_loses_control_access_after_revocation() {
+        use base64::Engine as _;
+        use std::process::Stdio;
+        let executable =
+            std::env::var("EASYTIER_TEST_OFFICIAL_CORE").expect("official Core path required");
+        let db = Db::memory_db().await;
+        let owner = db.auto_create_user("official-owner").await.unwrap().id;
+        let token = db
+            .create_device_token(owner, "official-work")
+            .await
+            .unwrap();
+        let machine = Uuid::new_v4();
+        let instance = Uuid::new_v4();
+        let directory = tempfile::tempdir().unwrap();
+        let (manager, mut url) = start_config_server(db.clone(), true).await;
+        url.set_path(&token.token);
+        let mut child = tokio::process::Command::new(&executable)
+            .args([
+                "--config-server",
+                url.as_str(),
+                "--machine-id",
+                &machine.to_string(),
+                "--config-dir",
+                directory.path().to_str().unwrap(),
+                "--no-listener",
+                "--rpc-portal",
+                "127.0.0.1:0",
+                "--hostname",
+                "official-work",
+                "--console-log-level",
+                "error",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        wait_until(|| async { manager.get_session_by_machine_id(owner, &machine).is_some() }).await;
+        assert!(
+            db.get_user_id_by_token(&token.token)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        manager.reconcile_managed_network_configs(owner, machine, vec![ManagedNetworkConfig {
+            instance_id: instance.to_string(),
+            network_config: serde_json::json!({
+                "instance_id": instance.to_string(), "network_name": "official-isolated",
+                "network_secret": "synthetic-isolated-secret", "networking_method": "Manual",
+                "peer_urls": ["tcp://127.0.0.1:9"],
+                "peers": [{"uri": "tcp://127.0.0.1:9", "peer_public_key": key}],
+                "secure_mode": {"enabled": true}, "listener_urls": [], "no_tun": true,
+                "disable_ipv6": true, "multi_thread": false,
+                "disable_udp_hole_punching": true, "disable_tcp_hole_punching": true
+            }),
+        }], Some("official-revision".into()), None).await.unwrap();
+        let config_path = directory.path().join(format!("{instance}.toml"));
+        wait_until(|| async {
+            std::fs::read_to_string(&config_path)
+                .ok()
+                .is_some_and(|text| text.contains(&key) && text.contains("official-isolated"))
+        })
+        .await;
+        assert!(child.try_wait().unwrap().is_none());
+        assert!(db.revoke_device_token(owner, token.id).await.unwrap());
+        wait_until(|| async { manager.get_session_by_machine_id(owner, &machine).is_none() }).await;
+        // 撤销配置通道不会删除客户端缓存；网络撤权必须单独操作成员凭据。
+        assert!(config_path.exists());
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_claim_authorizes_exactly_one_machine() {
+        let db = Db::memory_db().await;
+        let owner = db.auto_create_user("owner").await.unwrap().id;
+        let record = db.create_device_token(owner, "work").await.unwrap();
+        let auth = Arc::new(DeviceAuth::new(db.clone(), false).with_disallow_username_tokens(true));
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let auth = auth.clone();
+            let barrier = barrier.clone();
+            let token = record.token.clone();
+            tasks.push(tokio::spawn(async move {
+                let machine = Uuid::new_v4();
+                barrier.wait().await;
+                (
+                    machine,
+                    auth.validate_token(&request(&token, machine))
+                        .await
+                        .unwrap()
+                        .valid,
+                )
+            }));
+        }
+        let mut winners = Vec::new();
+        for task in tasks {
+            let (machine, valid) = task.await.unwrap();
+            if valid {
+                winners.push(machine);
+            }
+        }
+        assert_eq!(winners.len(), 1);
+        assert_eq!(
+            db.find_device_token(&record.token)
+                .await
+                .unwrap()
+                .unwrap()
+                .machine_id,
+            Some(winners[0])
+        );
+        assert!(db.revoke_device_token(owner, record.id).await.unwrap());
+        assert!(
+            !db.claim_device_token_machine(record.id, winners[0])
+                .await
+                .unwrap()
         );
     }
 

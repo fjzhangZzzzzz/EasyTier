@@ -360,23 +360,19 @@ async fn prepare_reconcile_round(
         return RoundStatus::Skip;
     }
 
-    let user_id = match storage
-        .db
-        .get_user_id_by_token(req.user_token.clone())
-        .await
-    {
-        Ok(Some(user_id)) => user_id,
-        Ok(None) => {
-            tracing::info!(
-                machine_id = ?req.machine_id,
-                "user not found by heartbeat token"
-            );
+    let user_id = {
+        let Some(data) = session_data.upgrade() else {
+            return RoundStatus::Stop;
+        };
+        let data = data.read().await;
+        if !SessionRpcService::runtime_heartbeat_is_current_locked(&data, &req) {
             return RoundStatus::Skip;
         }
-        Err(e) => {
-            tracing::error!("Failed to get user id by token, error: {:?}", e);
+        // 复用已经核验的会话归属，不再次把设备凭据当作账户名查询。
+        let Some(identity) = data.storage_token.as_ref() else {
             return RoundStatus::Skip;
-        }
+        };
+        identity.user_id
     };
 
     let (

@@ -59,12 +59,18 @@ export interface ParseConfigResponse {
     error?: string;
 }
 
+export interface CentralNetworkPeer {
+    uri: string;
+    peer_public_key?: string | null;
+}
+
 export interface CentralNetworkSettings {
     display_name: string;
     network_name?: string | null;
     networking_method: string;
     public_server_url?: string | null;
     peer_urls: string[];
+    peers?: CentralNetworkPeer[];
     virtual_cidr?: string | null;
     secure_mode?: boolean;
 }
@@ -85,6 +91,7 @@ export interface CentralNetworkDetail extends CentralNetworkSummary {
     virtual_cidr?: string | null;
     public_server_url?: string | null;
     peer_urls: string[];
+    peers?: CentralNetworkPeer[];
 }
 
 export interface CentralNetworkMember {

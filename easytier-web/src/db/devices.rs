@@ -59,8 +59,7 @@ impl From<DeviceTokenRow> for DeviceTokenRecord {
 }
 
 impl Db {
-    /// Creates an enrollment token. The secret is returned in the record and
-    /// never again: the REST layer surfaces it once, the list endpoint does not.
+    /// 创建接入凭据；此兼容模型在受限数据库中保留原值，列表也可重新取得。
     pub async fn create_device_token(
         &self,
         user_id: UserIdInDb,
@@ -155,38 +154,28 @@ impl Db {
         Ok(row.map(Into::into))
     }
 
-    /// Binds an enrollment token to the first machine that used it. Later
-    /// connections from a different machine are rejected; the binding itself
-    /// can only be cleared by revoking the token.
-    pub async fn bind_device_token_machine(
+    /// 原子认领或刷新同一设备；零行更新必须作为拒绝处理，不能忽略竞争结果。
+    pub async fn claim_device_token_machine(
         &self,
         token_id: i32,
         machine_id: Uuid,
-    ) -> Result<(), DbErr> {
-        sqlx::query(
+    ) -> Result<bool, DbErr> {
+        let result = sqlx::query(
             r#"
             UPDATE device_tokens
             SET machine_id = ?, last_used_time = ?
-            WHERE id = ? AND machine_id IS NULL
+            WHERE id = ? AND revoked_at IS NULL
+              AND (machine_id IS NULL OR machine_id = ?)
             "#,
         )
         .bind(machine_id.to_string())
         .bind(chrono::Local::now().fixed_offset())
         .bind(token_id)
+        .bind(machine_id.to_string())
         .execute(&self.db)
         .await
         .map_err(sqlx_db_error)?;
-        Ok(())
-    }
-
-    pub async fn touch_device_token(&self, token_id: i32) -> Result<(), DbErr> {
-        sqlx::query("UPDATE device_tokens SET last_used_time = ? WHERE id = ?")
-            .bind(chrono::Local::now().fixed_offset())
-            .bind(token_id)
-            .execute(&self.db)
-            .await
-            .map_err(sqlx_db_error)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn upsert_device_heartbeat(

@@ -81,10 +81,24 @@ impl CentralNetworkIntent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NetworkMode {
-    PublicServer { url: String },
-    Manual { peer_urls: Vec<String> },
+    PublicServer {
+        url: String,
+    },
+    Manual {
+        peer_urls: Vec<String>,
+        #[serde(default)]
+        peers: Vec<ManualPeer>,
+    },
     Standalone,
-    Gateway { peer_url: String },
+    Gateway {
+        peer_url: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualPeer {
+    pub uri: String,
+    pub peer_public_key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

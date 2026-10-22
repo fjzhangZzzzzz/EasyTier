@@ -386,7 +386,7 @@ web:
     device_token_bound: "已绑定设备"
     device_token_revoked: "已吊销"
     device_token_revoke: "吊销令牌"
-    device_token_hint: "每个令牌仅可接入一台设备；吊销即可切断该设备。除非服务器以 --disallow-username-tokens 启动，旧的用户名接入方式仍然可用。"
+    device_token_hint: "每个令牌绑定一台设备；撤销只停止配置通道，不撤销已保存的网络凭据。退出网络还需移除网络成员。应以 --disallow-username-tokens 关闭用户名回退。"
     enroll_copy: "复制接入命令"
     enroll_token_note: "命令末尾的路径是接入令牌（当前用户名）。设备接入后会出现在设备列表中。"
     enroll_webhook_note: "本控制台使用外部认证系统签发接入令牌，请使用认证系统分配的令牌替换命令末尾的用户名。"
@@ -534,8 +534,8 @@ web:
     tab_status: 运行状态
     members_hint: 成员的组网配置由控制台统一下发，设备离线时配置将在其重新上线后生效
     add_member: 添加设备
-    add_temporary_member: 添加为临时节点
-    add_temporary_hint: 临时节点使用专属凭证接入，不会收到网络密钥；凭证到期或被吊销后自动断开
+    add_temporary_member: 普通终端（独立网络凭据）
+    add_temporary_hint: 普通终端使用独立凭据，不接收共享主密钥；默认 180 天，到期前按需重新签发。关闭后将作为持有共享主密钥的可信管理员加入
     add_temporary_needs_secure: 需要先在网络设置中开启安全模式才能添加临时节点
     expires_at: 到期
     locate_credential: 查看凭证

@@ -7,7 +7,7 @@ use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt, NetworkingMethod},
     proto::{
         acl::{Acl, AclV1, Action, Chain, ChainType, GroupInfo, Protocol, Rule},
-        api::manage::ManagedCredentialConfig,
+        api::manage::{ManagedCredentialConfig, NetworkPeerConfig},
         common::SecureModeConfig,
     },
 };
@@ -46,6 +46,8 @@ pub enum CompileError {
     EmptyNetworkSecret,
     #[error("invalid network URL: {0}")]
     InvalidUrl(String),
+    #[error("invalid manual peer: {0}")]
+    InvalidPeer(String),
     #[error("manual networking requires at least one peer URL")]
     EmptyPeerUrls,
     #[error("duplicate device in network intent: {0}")]
@@ -94,6 +96,7 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
     let addresses = assign_addresses(intent.virtual_cidr.as_deref(), &members)?;
     let acl = compile_acl(intent.acl_policy.as_ref(), &members);
     let (networking_method, public_server_url, peer_urls) = compile_mode(&intent.mode)?;
+    let peers = compile_peers(&intent.mode)?;
     let managed_credentials: Vec<ManagedCredentialConfig> = credentials
         .iter()
         .map(|credential| compile_managed_credential(credential))
@@ -127,6 +130,7 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 networking_method: Some(networking_method as i32),
                 public_server_url: public_server_url.clone(),
                 peer_urls: peer_urls.clone(),
+                peers: peers.clone(),
                 secure_mode: if temporary {
                     Some(SecureModeConfig {
                         enabled: true,
@@ -238,7 +242,7 @@ fn compile_mode(
                 Vec::new(),
             ))
         }
-        NetworkMode::Manual { peer_urls } => {
+        NetworkMode::Manual { peer_urls, .. } => {
             if peer_urls.is_empty() {
                 return Err(CompileError::EmptyPeerUrls);
             }
@@ -256,6 +260,51 @@ fn compile_mode(
             Ok((NetworkingMethod::Manual, None, vec![peer_url.clone()]))
         }
     }
+}
+
+fn compile_peers(mode: &NetworkMode) -> Result<Vec<NetworkPeerConfig>, CompileError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let NetworkMode::Manual { peer_urls, peers } = mode else {
+        return Ok(Vec::new());
+    };
+    if peers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut expected = peer_urls.clone();
+    expected.sort();
+    expected.dedup();
+    let mut result = std::collections::BTreeMap::new();
+    for peer in peers {
+        validate_url(&peer.uri)?;
+        if let Some(key) = &peer.peer_public_key {
+            if STANDARD.decode(key).map(|bytes| bytes.len()).ok() != Some(32) {
+                return Err(CompileError::InvalidPeer(format!(
+                    "invalid public key for {}",
+                    peer.uri
+                )));
+            }
+        }
+        if let Some(previous) = result.insert(peer.uri.clone(), peer.peer_public_key.clone()) {
+            if previous != peer.peer_public_key {
+                return Err(CompileError::InvalidPeer(format!(
+                    "conflicting keys for {}",
+                    peer.uri
+                )));
+            }
+        }
+    }
+    if result.keys().cloned().collect::<Vec<_>>() != expected {
+        return Err(CompileError::InvalidPeer(
+            "peers and peer_urls must identify the same nodes".to_owned(),
+        ));
+    }
+    Ok(result
+        .into_iter()
+        .map(|(uri, peer_public_key)| NetworkPeerConfig {
+            uri,
+            peer_public_key,
+        })
+        .collect())
 }
 
 fn validate_url(value: &str) -> Result<(), CompileError> {
@@ -851,6 +900,7 @@ mod tests {
             network_name: "engineering".to_owned(),
             network_secret: "network-secret".to_owned(),
             mode: NetworkMode::Manual {
+                peers: Vec::new(),
                 peer_urls: vec!["tcp://gateway.example.com:11010".to_owned()],
             },
             virtual_cidr: Some("10.42.0.0/29".to_owned()),
@@ -915,6 +965,48 @@ mod tests {
     }
 
     #[test]
+    fn manual_public_keys_survive_compilation_overrides_and_toml_export() {
+        let mut candidate = intent();
+        let uri = "tcp://gateway.example.com:11010".to_owned();
+        let key = BASE64_STANDARD.encode([7u8; 32]);
+        candidate.mode = NetworkMode::Manual {
+            peer_urls: vec![uri.clone()],
+            peers: vec![super::super::model::ManualPeer {
+                uri: uri.clone(),
+                peer_public_key: Some(key.clone()),
+            }],
+        };
+        candidate.members[0].config_override = Some(NetworkConfig {
+            peer_urls: vec!["tcp://wrong.example.com:1".into()],
+            ..Default::default()
+        });
+        for member in compile(&candidate).unwrap().members {
+            assert_eq!(member.network_config.peers.len(), 1);
+            assert_eq!(
+                member.network_config.peers[0].peer_public_key.as_deref(),
+                Some(key.as_str())
+            );
+            let toml = easytier::common::config::ConfigLoader::dump(
+                &member.network_config.gen_config().unwrap(),
+            );
+            assert!(toml.contains(&format!("peer_public_key = \"{key}\"")));
+        }
+        if let NetworkMode::Manual { peers, .. } = &mut candidate.mode {
+            peers[0].peer_public_key = Some("bad key".into());
+        }
+        assert!(matches!(
+            compile(&candidate),
+            Err(CompileError::InvalidPeer(_))
+        ));
+        candidate.members.clear();
+        candidate.acl_policy = None;
+        assert!(matches!(
+            compile(&candidate),
+            Err(CompileError::InvalidPeer(_))
+        ));
+    }
+
+    #[test]
     fn peer_schemes_are_validated_even_without_members() {
         for members in [Vec::new(), intent().members] {
             for url in [
@@ -930,6 +1022,7 @@ mod tests {
                 candidate.acl_policy = None;
                 for mode in [
                     NetworkMode::Manual {
+                        peers: Vec::new(),
                         peer_urls: vec![url.to_owned()],
                     },
                     NetworkMode::PublicServer {

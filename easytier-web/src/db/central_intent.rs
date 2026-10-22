@@ -8,8 +8,8 @@ use uuid::Uuid;
 use crate::central_network::{
     compiler::{CompileError, compile},
     model::{
-        CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-        NetworkMode,
+        CentralNetworkIntent, CredentialGrant, ManualPeer, NetworkCredentialIntent,
+        NetworkMemberIntent, NetworkMode,
     },
 };
 
@@ -59,6 +59,7 @@ struct PreparedIntent {
     networking_method: &'static str,
     public_server_url: Option<String>,
     peer_urls: String,
+    peers: String,
     acl_policy: Option<String>,
     members: Vec<PreparedMember>,
     credentials: Vec<PreparedCredential>,
@@ -77,7 +78,7 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
     let compiled = compile(&intent)?;
     let (networking_method, public_server_url, raw_peer_urls) = match &intent.mode {
         NetworkMode::PublicServer { url } => ("PublicServer", Some(url.clone()), Vec::new()),
-        NetworkMode::Manual { peer_urls } => ("Manual", None, peer_urls.clone()),
+        NetworkMode::Manual { peer_urls, .. } => ("Manual", None, peer_urls.clone()),
         NetworkMode::Standalone => ("Standalone", None, Vec::new()),
         NetworkMode::Gateway { peer_url } => ("Gateway", None, vec![peer_url.clone()]),
     };
@@ -126,6 +127,10 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
 
     Ok(PreparedIntent {
         peer_urls: json(&raw_peer_urls)?,
+        peers: json(&match &intent.mode {
+            NetworkMode::Manual { peers, .. } => peers.clone(),
+            _ => Vec::new(),
+        })?,
         acl_policy: intent.acl_policy.as_ref().map(json).transpose()?,
         intent,
         networking_method,
@@ -415,9 +420,9 @@ async fn persist_intent(
         r#"
         INSERT INTO networks (
             user_id, id, display_name, network_name, network_secret,
-            networking_method, public_server_url, peer_urls, virtual_cidr,
+            networking_method, public_server_url, peer_urls, peers, virtual_cidr,
             secure_mode, acl_policy, create_time, update_time
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, id) DO UPDATE SET
             display_name = excluded.display_name,
             network_name = excluded.network_name,
@@ -425,6 +430,7 @@ async fn persist_intent(
             networking_method = excluded.networking_method,
             public_server_url = excluded.public_server_url,
             peer_urls = excluded.peer_urls,
+            peers = excluded.peers,
             virtual_cidr = excluded.virtual_cidr,
             secure_mode = excluded.secure_mode,
             acl_policy = excluded.acl_policy,
@@ -439,6 +445,7 @@ async fn persist_intent(
     .bind(prepared.networking_method)
     .bind(&prepared.public_server_url)
     .bind(&prepared.peer_urls)
+    .bind(&prepared.peers)
     .bind(&prepared.intent.virtual_cidr)
     .bind(prepared.intent.secure_mode)
     .bind(&prepared.acl_policy)
@@ -542,6 +549,7 @@ async fn load_intent(
         String,
         Option<String>,
         String,
+        String,
         Option<String>,
         bool,
         Option<String>,
@@ -549,7 +557,7 @@ async fn load_intent(
     let row: Option<NetworkRow> = sqlx::query_as(
         r#"
         SELECT display_name, network_name, network_secret, networking_method,
-            public_server_url, peer_urls, virtual_cidr, secure_mode, acl_policy
+            public_server_url, peer_urls, peers, virtual_cidr, secure_mode, acl_policy
         FROM networks WHERE user_id = ? AND id = ?
         "#,
     )
@@ -565,6 +573,7 @@ async fn load_intent(
         networking_method,
         public_server_url,
         peer_urls,
+        peers,
         virtual_cidr,
         secure_mode,
         acl_policy,
@@ -581,7 +590,12 @@ async fn load_intent(
                 CentralIntentError::InvalidStoredData("missing public server URL".to_owned())
             })?,
         },
-        "Manual" => NetworkMode::Manual { peer_urls },
+        "Manual" => NetworkMode::Manual {
+            peer_urls,
+            peers: serde_json::from_str::<Vec<ManualPeer>>(&peers).map_err(|error| {
+                CentralIntentError::InvalidStoredData(format!("invalid peers: {error}"))
+            })?,
+        },
         "Standalone" => NetworkMode::Standalone,
         "Gateway" => NetworkMode::Gateway {
             peer_url: peer_urls.into_iter().next().ok_or_else(|| {
@@ -795,6 +809,43 @@ mod tests {
             .await
             .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn manual_peer_keys_survive_sqlite_roundtrip_and_reject_invalid_updates() {
+        let db = Db::memory_db().await;
+        let user = db.auto_create_user("pin-owner").await.unwrap().id;
+        let network = Uuid::new_v4();
+        let devices = [Uuid::new_v4(), Uuid::new_v4()];
+        register_devices(&db, user, &devices).await;
+        let mut candidate = intent(user, network, devices);
+        candidate.mode = NetworkMode::Manual {
+            peer_urls: vec!["tcp://127.0.0.1:11010".into()],
+            peers: vec![ManualPeer {
+                uri: "tcp://127.0.0.1:11010".into(),
+                peer_public_key: Some(BASE64_STANDARD.encode([7u8; 32])),
+            }],
+        };
+        db.save_central_network_intent(candidate.clone())
+            .await
+            .unwrap();
+        let stored = db
+            .load_central_network_intent(user, network)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.mode, candidate.mode);
+        if let NetworkMode::Manual { peers, .. } = &mut candidate.mode {
+            peers[0].peer_public_key = Some("invalid".into());
+        }
+        assert!(db.save_central_network_intent(candidate).await.is_err());
+        assert_eq!(
+            db.load_central_network_intent(user, network)
+                .await
+                .unwrap()
+                .unwrap(),
+            stored
+        );
     }
 
     #[tokio::test]

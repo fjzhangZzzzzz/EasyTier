@@ -44,7 +44,7 @@ pub(super) fn retry_delay(machine_id: uuid::Uuid) -> Duration {
 async fn request_heartbeat_validation(
     input: &WebhookValidationInput,
     persisted_config_revision: Option<&str>,
-) -> anyhow::Result<Option<WebhookHeartbeatValidation>> {
+) -> anyhow::Result<Option<(WebhookHeartbeatValidation, Option<i32>)>> {
     let webhook_req = crate::webhook::ValidateTokenRequest {
         token: input.req.user_token.clone(),
         machine_id: input.machine_id.to_string(),
@@ -83,10 +83,13 @@ async fn request_heartbeat_validation(
         return Ok(None);
     }
 
-    Ok(Some(WebhookHeartbeatValidation {
-        config_revision: resp.config_revision,
-        binding_version: resp.binding_version,
-    }))
+    Ok(Some((
+        WebhookHeartbeatValidation {
+            config_revision: resp.config_revision,
+            binding_version: resp.binding_version,
+        },
+        resp.local_user_id,
+    )))
 }
 
 async fn resolve_user_id(storage: &Storage, token: &str) -> anyhow::Result<i32> {
@@ -110,13 +113,17 @@ async fn persisted_config_revision_for_token(
     storage: &Storage,
     token: &str,
     machine_id: uuid::Uuid,
+    authenticated_owner: Option<i32>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(user_id) = storage
-        .db()
-        .get_user_id_by_token(token)
-        .await
-        .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?
-    else {
+    let user_id = match authenticated_owner {
+        Some(user_id) => Some(user_id),
+        None => storage
+            .db()
+            .get_user_id_by_token(token)
+            .await
+            .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?,
+    };
+    let Some(user_id) = user_id else {
         return Ok(None);
     };
     storage
@@ -242,10 +249,23 @@ pub(super) async fn run_round(
     input: WebhookValidationInput,
     validation_change_epoch: u64,
 ) -> anyhow::Result<()> {
+    // 已认证会话以其账户为准；随机设备 Token 不是用户名。
+    let authenticated_owner = if let Some(session) = session_data.upgrade() {
+        let data = session.read().await;
+        data.storage_token
+            .as_ref()
+            .filter(|token| {
+                token.token == input.req.user_token && token.machine_id == input.machine_id
+            })
+            .map(|token| token.user_id)
+    } else {
+        None
+    };
     let persisted_config_revision = persisted_config_revision_for_token(
         &input.storage,
         &input.req.user_token,
         input.machine_id,
+        authenticated_owner,
     )
     .await?;
     let validation =
@@ -259,12 +279,15 @@ pub(super) async fn run_round(
         return Ok(());
     }
 
-    let Some(validation) = validation else {
+    let Some((validation, local_user_id)) = validation else {
         apply_rejected(&session_data, &input, validation_change_epoch).await;
         return Ok(());
     };
 
-    let user_id = resolve_user_id(&input.storage, &input.req.user_token).await?;
+    let user_id = match local_user_id {
+        Some(user_id) => user_id,
+        None => resolve_user_id(&input.storage, &input.req.user_token).await?,
+    };
     apply_success(
         &session_data,
         input,

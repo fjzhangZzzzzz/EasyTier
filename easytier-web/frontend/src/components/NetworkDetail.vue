@@ -8,6 +8,7 @@ import { Config, NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib
 import AclPolicyTab from './AclPolicyTab.vue';
 import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
+import PeerPublicKeys from './PeerPublicKeys.vue';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -108,18 +109,23 @@ const openAddMember = async () => {
         candidateDevices.value = [];
     }
     selectedDevices.value = [];
-    addTemporary.value = false;
-    addTtlHours.value = 7 * 24;
+    addTemporary.value = network.value?.secure_mode === true;
+    addTtlHours.value = 180 * 24;
     addMemberVisible.value = true;
 };
 
 const addTemporary = ref(false);
-const addTtlHours = ref(7 * 24);
+const addTtlHours = ref(180 * 24);
 const addTtlOptions = [
     { label: t('web.network_detail.ttl_24h'), value: 24 },
     { label: t('web.network_detail.ttl_7d'), value: 7 * 24 },
     { label: t('web.network_detail.ttl_30d'), value: 30 * 24 },
+    { label: '180 天', value: 180 * 24 },
 ];
+
+const expiringMembers = computed(() => (members.value ?? []).filter(member =>
+    member.temporary && member.credential_expiry_unix != null
+    && member.credential_expiry_unix <= Date.now() / 1000 + 14 * 24 * 3600));
 
 const addMembers = async () => {
     const deviceIds = selectedDevices.value.map((device) => device.machine_id);
@@ -297,6 +303,7 @@ const settingsForm = ref({
 // Initial nodes in the same model as the GUI config form; an empty list
 // means Standalone.
 const initialNodes = ref<string[]>([]);
+const peerKeys = ref<Record<string, string>>({});
 const settingsLoaded = ref(false);
 const savingSettings = ref(false);
 
@@ -306,6 +313,7 @@ const protos = NetworkTypes.PEER_PROTOCOLS;
 
 const gatewayFollowed = () =>
     gatewayInfo.value?.enabled === true
+    && !Object.values(peerKeys.value).some(key => key.trim())
     && initialNodes.value.length === 1
     && initialNodes.value[0] === gatewayInfo.value?.peer_url;
 
@@ -313,6 +321,7 @@ const loadSettingsForm = () => {
     if (!network.value) {
         return;
     }
+    peerKeys.value = Object.fromEntries((network.value.peers ?? []).map(peer => [peer.uri, peer.peer_public_key ?? '']));
     settingsForm.value = {
         display_name: network.value.display_name,
         network_name: network.value.network_name,
@@ -351,7 +360,7 @@ const saveSettings = async () => {
         // Keeping exactly the gateway URL as the only initial node preserves
         // the Gateway mode (the compiled peer list follows the gateway URL);
         // anything else compiles to Manual peers, or Standalone when empty.
-        const method = network.value?.networking_method === 'PublicServer' && initialNodes.value.length === 1 ? 'PublicServer'
+        const method = network.value?.networking_method === 'PublicServer' && initialNodes.value.length === 1 && !Object.values(peerKeys.value).some(key => key.trim()) ? 'PublicServer'
             : gatewayFollowed() ? 'Gateway'
             : initialNodes.value.length > 0 ? 'Manual' : 'Standalone';
         const settings = {
@@ -360,6 +369,7 @@ const saveSettings = async () => {
             networking_method: method,
             public_server_url: method === 'PublicServer' ? initialNodes.value[0] : null,
             peer_urls: method === 'Manual' ? initialNodes.value : [],
+            peers: method === 'Manual' ? initialNodes.value.map(uri => ({ uri, peer_public_key: peerKeys.value[uri]?.trim() || null })) : [],
             virtual_cidr: normalizeVirtualSubnet(settingsForm.value.virtual_cidr) || null,
             secure_mode: settingsForm.value.secure_mode,
         };
@@ -746,6 +756,7 @@ const credentialJoinPeer = () => {
 const credentialJoinCommand = (secret: string) => {
     if (!network.value) return '';
     const peer = credentialJoinPeer();
+    if (network.value.peers?.some(item => item.peer_public_key)) return credentialJoinToml(secret);
     return [
         'easytier-core',
         `--network-name ${network.value.network_name}`,
@@ -759,13 +770,18 @@ const credentialJoinCommand = (secret: string) => {
 // node's x25519 private key; the matching public key is derived on load.
 const credentialJoinToml = (secret: string) => {
     if (!network.value) return '';
-    const peer = credentialJoinPeer();
+    const configuredPeers = network.value.networking_method === 'Manual' && network.value.peers?.length
+        ? network.value.peers
+        : [{ uri: credentialJoinPeer(), peer_public_key: null }];
     return [
         '[network_identity]',
-        `network_name = "${network.value.network_name}"`,
+        `network_name = ${JSON.stringify(network.value.network_name)}`,
         '',
-        '[[peer]]',
-        `uri = "${peer}"`,
+        ...configuredPeers.flatMap(peer => [
+            '[[peer]]',
+            `uri = ${JSON.stringify(peer.uri)}`,
+            ...(peer.peer_public_key ? [`peer_public_key = ${JSON.stringify(peer.peer_public_key)}`] : []),
+        ]),
         '',
         '[secure_mode]',
         'enabled = true',
@@ -775,12 +791,15 @@ const credentialJoinToml = (secret: string) => {
 
 type JoinFormat = 'cli' | 'toml';
 const joinFormat = ref<JoinFormat>('cli');
-const joinFormatOptions = [
+const joinFormatOptions = computed(() => hasPinnedPeers.value ? [
+    { label: t('web.network_detail.credential_join_toml'), value: 'toml' },
+] : [
     { label: t('web.network_detail.credential_join_cli'), value: 'cli' },
     { label: t('web.network_detail.credential_join_toml'), value: 'toml' },
-];
+]);
+const hasPinnedPeers = computed(() => network.value?.peers?.some(peer => peer.peer_public_key) ?? false);
 const joinText = (secret: string) =>
-    joinFormat.value === 'cli' ? credentialJoinCommand(secret) : credentialJoinToml(secret);
+    joinFormat.value === 'cli' && !hasPinnedPeers.value ? credentialJoinCommand(secret) : credentialJoinToml(secret);
 
 const copyText = async (text: string, what: string) => {
     let copied = false;
@@ -867,6 +886,11 @@ const switchTab = async (tab: string) => {
         <div v-if="network === undefined && !loadError" class="console-panel loading-rows">
             <Skeleton v-for="i in 4" :key="i" height="2rem" />
         </div>
+
+        <Message v-if="expiringMembers.length" severity="warn" :closable="false" data-testid="credential-expiry-warning">
+            网络凭据已到期或将在 14 天内到期：{{ expiringMembers.map(member => member.hostname ?? member.device_id).join('、') }}。
+            请记录地址与 ACL 后，通过移除、重新添加普通终端签发新凭据，并复核访问范围；期间可能短暂中断。
+        </Message>
 
         <Tabs v-if="network !== undefined" :value="activeTab" @update:value="switchTab(String($event))" lazy class="console-panel network-tabs">
             <TabList>
@@ -1175,6 +1199,7 @@ const switchTab = async (tab: string) => {
                     <UrlListInput id="settings-initial-nodes" v-model="initialNodes" :protos="protos"
                         defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
                         :placeholder="t('initial_node_placeholder')" />
+                    <PeerPublicKeys v-model="peerKeys" :urls="initialNodes" />
                 </div>
                 <div class="flex gap-2">
                     <Button :label="t('web.common.save')" icon="pi pi-check" :loading="savingSettings" @click="saveSettings" />

@@ -10,6 +10,7 @@ mod m20260920_000009_central_network_intent;
 
 mod m20261001_000010_member_ip_allocation;
 mod m20261014_000011_device_tokens;
+mod m20261022_000012_manual_peer_keys;
 
 pub struct Migrator;
 
@@ -26,6 +27,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260920_000009_central_network_intent::Migration),
             Box::new(m20261001_000010_member_ip_allocation::Migration),
             Box::new(m20261014_000011_device_tokens::Migration),
+            Box::new(m20261022_000012_manual_peer_keys::Migration),
         ]
     }
 }

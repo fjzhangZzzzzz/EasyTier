@@ -1,0 +1,12 @@
+{
+  "candidate_version": "0.1.0-rc.1",
+  "status": "isolated-candidate",
+  "upstream_repository": "https://github.com/EasyTier/EasyTier",
+  "upstream_commit": "54f2850d9d3cc42eb93e0d44d19bed5d9fbf2d0a",
+  "upstream_web_version": "2.7.0",
+  "cherry_picked_commit": "42cc95352133807769fa77af2b45617c8a9cb371",
+  "scope": ["easytier-web", "matching-web-frontend", "sqlite-migrations"],
+  "official_windows_core_commit": "318a0b0686db9ee4b01e9c3c3cbaefe01315fcae",
+  "official_windows_archive_sha256": "26342c2026c384f368fa83eae109999faf38f26bc4f88a70b3b8ce0894d11a09",
+  "production_adopted": false
+}

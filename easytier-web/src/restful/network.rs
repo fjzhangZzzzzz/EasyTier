@@ -1073,6 +1073,7 @@ mod tests {
             ) -> anyhow::Result<ValidateTokenResponse> {
                 *self.0.lock().unwrap() = request.applied_config_revision.clone();
                 Ok(ValidateTokenResponse {
+                    local_user_id: None,
                     valid: true,
                     pre_approved: true,
                     binding_version: 0,

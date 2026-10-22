@@ -50,3 +50,6 @@ easytier-gui/src-tauri/*.sys
 # contrib
 go.sum
 .test-env/
+
+# 本地浏览器验收工件
+/output/playwright/

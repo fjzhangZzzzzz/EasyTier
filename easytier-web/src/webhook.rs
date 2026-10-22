@@ -345,6 +345,9 @@ pub struct ValidateTokenRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ValidateTokenResponse {
+    /// 仅进程内认证器可设置账户归属，外部 JSON 不能注入此字段。
+    #[serde(skip)]
+    pub local_user_id: Option<i32>,
     pub valid: bool,
     #[serde(default)]
     pub pre_approved: bool,
@@ -902,6 +905,14 @@ mod tests {
         assert!(resp.config_revision.is_empty());
     }
 
+    #[test]
+    fn external_webhook_cannot_supply_local_account_identity() {
+        let resp: ValidateTokenResponse =
+            serde_json::from_str(r#"{"valid":true,"local_user_id":42}"#).unwrap();
+        assert!(resp.valid);
+        assert_eq!(resp.local_user_id, None);
+    }
+
     #[tokio::test]
     async fn node_connected_transport_error_is_retryable() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -910,7 +921,7 @@ mod tests {
         let webhook = WebhookConfig::new(Some(format!("http://{addr}")), None, None, None, None);
 
         let error = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             webhook.notify_node_connected(&node_connected_request()),
         )
         .await

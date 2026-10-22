@@ -118,10 +118,10 @@ const activeTokens = computed(() => deviceTokens.value.filter(token => !token.re
 const enrollCommand = computed(() => {
     if (!enrollInfo.value) return '';
     const selected = activeTokens.value.find(token => token.id === selectedTokenId.value);
-    if (!selected) return '';
+    if (!selected && !enrollInfo.value.webhook_auth) return '';
     const host = new URL(getApiBase(), window.location.href).hostname;
     const { config_server_protocol: proto, config_server_port: port } = enrollInfo.value;
-    return `easytier-core --config-server ${proto}://${host}:${port}/${selected.token}`;
+    return `easytier-core --config-server ${proto}://${host}:${port}/${enrollInfo.value.webhook_auth ? enrollInfo.value.username : selected!.token}`;
 });
 
 const loadDeviceTokens = async () => {

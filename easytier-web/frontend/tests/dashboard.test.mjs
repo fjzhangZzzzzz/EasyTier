@@ -82,7 +82,8 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         if (method !== 'GET') state.writes.push({ path, method, payload });
         if (state.failures.has(path)) return route.fulfill({ status: 503, json: { message: 'Test unavailable' } });
         let result = {};
-        if (path === '/summary') result = { device_count: state.machines.length };
+        if (path === '/device-tokens') result = { tokens: [{ id: 1, name: 'work', token: 'test-device-token', revoked_at: null }] };
+        else if (path === '/summary') result = { device_count: state.machines.length };
         else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
         else if (path === '/machines') result = { machines: state.machines };
         else if (path === '/networks/gateway-info') {
@@ -163,7 +164,7 @@ test('overview uses real counts and recovers from partial refresh failures', asy
 test('enrollment command uses the console info response', async t => {
     const { page } = await open(t);
     await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
-    await page.getByText('easytier-core --config-server udp://127.0.0.1:22020/test-user').waitFor();
+    await page.getByText('easytier-core --config-server udp://127.0.0.1:22020/test-device-token').waitFor();
 });
 
 for (const [apiHost, hostname] of [
@@ -174,7 +175,7 @@ for (const [apiHost, hostname] of [
     test(`enrollment command uses the configured API hostname for ${apiHost}`, async t => {
         const { page } = await open(t, '/h', {}, state => { state.apiHost = apiHost; });
         await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
-        await page.getByText(`easytier-core --config-server udp://${hostname}:22020/test-user`).waitFor();
+        await page.getByText(`easytier-core --config-server udp://${hostname}:22020/test-device-token`).waitFor();
     });
 }
 
@@ -785,4 +786,53 @@ test('external Console keeps the device dashboard without central requests or na
     assert.equal(state.requests.some(request => request.path.startsWith('/networks')), false);
     assert.equal(await page.locator('a[href*="/networks"]').count(), 0);
     assert.equal(await page.locator('.p-message-warn').count(), 0);
+});
+
+
+test('Manual peer public keys survive settings save, reload and credential export', async t => {
+    const peer = 'tcp://192.0.2.1:11010';
+    const key = Buffer.alloc(32, 7).toString('base64');
+    const { page, state } = await open(t, '/h/networks/network-0', {}, state => {
+        Object.assign(state.networks[0], {
+            secure_mode: true, networking_method: 'Manual', peer_urls: [peer],
+            peers: [{ uri: peer, peer_public_key: key }],
+        });
+        state.credentials = [{ credential_id: 'pin-credential', credential_secret: 'test-secret', expiry_unix: 1893456000, reusable: false, online_peers: [] }];
+    });
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    const input = page.getByLabel(`${peer} · 节点公钥（可选）`);
+    assert.equal(await input.inputValue(), key);
+    await page.locator('#settings-display-name').fill('Pinned network');
+    const saved = page.waitForResponse(response => response.request().method() === 'PATCH');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await saved;
+    const settings = state.writes.find(write => write.method === 'PATCH').payload.settings;
+    assert.equal(settings.networking_method, 'Manual', 'pin must not turn a Manual network into unpinned Gateway');
+    assert.deepEqual(settings.peers, [{ uri: peer, peer_public_key: key }]);
+    await page.reload();
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    assert.equal(await input.inputValue(), key);
+    await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
+    await page.getByRole('button', { name: 'Show join command', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Temporary device join command' });
+    assert.match(await dialog.locator('pre').textContent(), new RegExp(`peer_public_key = "${key.replace(/[+]/g, '\\+')}"`));
+    assert.equal(await dialog.getByRole('button', { name: 'Command line', exact: true }).count(), 0);
+});
+
+
+test('ordinary terminals default to 180 days and near-expiry members are clearly listed', async t => {
+    const { page, state } = await open(t, '/h/networks/network-0', {}, state => {
+        state.networks[0].secure_mode = true;
+        Object.assign(state.members[0], { temporary: true, credential_expiry_unix: Math.floor(Date.now() / 1000) + 7 * 86400 });
+    });
+    await page.getByTestId('credential-expiry-warning').waitFor();
+    assert.match(await page.getByTestId('credential-expiry-warning').textContent(), /Amsterdam gateway/);
+    await page.getByRole('button', { name: 'Add Devices' }).click();
+    assert.equal(await page.locator('#add-temporary').isChecked(), true);
+    await page.getByRole('dialog').getByRole('row').filter({ hasText: 'Build server' }).getByRole('checkbox').check();
+    await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.getByRole('row').filter({ hasText: 'Added device' }).waitFor();
+    const request = state.writes.find(write => write.method === 'POST' && write.path.endsWith('/members')).payload;
+    assert.equal(request.temporary, true);
+    assert.equal(request.ttl_seconds, 180 * 86400);
 });
