@@ -388,7 +388,7 @@ web:
     device_token_revoke: "吊销令牌"
     device_token_hint: "每个令牌绑定一台设备；撤销只停止配置通道，不撤销已保存的网络凭据。退出网络还需移除网络成员。应以 --disallow-username-tokens 关闭用户名回退。"
     enroll_copy: "复制接入命令"
-    enroll_token_note: "命令末尾的路径是接入令牌（当前用户名）。设备接入后会出现在设备列表中。"
+    enroll_token_note: "命令末尾的路径是所选设备令牌。安装登记后，仍需核对设备并批准加入网络。"
     enroll_webhook_note: "本控制台使用外部认证系统签发接入令牌，请使用认证系统分配的令牌替换命令末尾的用户名。"
     blocked_devices: "设备黑名单"
     blocked_empty: "暂无拉黑的设备。"

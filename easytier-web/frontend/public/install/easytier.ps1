@@ -15,6 +15,8 @@ $serviceName = 'homelab-easytier-client'
 $version = '2.7.0-318a0b06'
 if ((Test-Path -LiteralPath $base) -or (Test-Path -LiteralPath $state) -or (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { throw '发现既有安装；拒绝覆盖身份，请先核对原安装。' }
 if (Get-Process -Name easytier-core -ErrorAction SilentlyContinue) { throw '发现 EasyTier Core 正在运行，请先核对已有实例。' }
+$probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,15989)
+try { $probe.Start() } catch { throw '本机 RPC 端口已占用，拒绝覆盖现有实例。' } finally { $probe.Stop() }
 $tmp = Join-Path $env:TEMP ('homelab-et-install-' + [Guid]::NewGuid().ToString())
 [void](New-Item -ItemType Directory -Path $tmp)
 try {

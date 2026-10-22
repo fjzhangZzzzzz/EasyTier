@@ -23,8 +23,14 @@ if [[ -e "$state/installation.json" ]]; then
   echo '该安装入口已执行；为避免覆盖身份，请使用已有服务，升级按维护手册执行。' >&2
   exit 1
 fi
-[[ ! -e "$base" && ! -e "$state" ]] || { echo '发现既有目录，拒绝覆盖；请先核对原安装。' >&2; exit 1; }
+[[ ! -e "$base" && ! -L "$base" && ! -e "$state" && ! -L "$state" ]] || { echo '发现既有目录，拒绝覆盖；请先核对原安装。' >&2; exit 1; }
 [[ $(systemctl show "$service.service" -p LoadState --value) == not-found ]] || { echo '发现同名服务，拒绝覆盖。' >&2; exit 1; }
+python3 - <<'PY'
+import socket
+with socket.socket() as probe:
+ try: probe.bind(('127.0.0.1',15989))
+ except OSError: raise SystemExit('本机 RPC 端口已占用，拒绝覆盖现有实例。')
+PY
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$origin/install/artifacts/easytier-linux-x86_64-318a0b06.zip" -o "$tmp/core.zip"
