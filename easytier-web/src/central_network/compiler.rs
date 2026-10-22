@@ -138,9 +138,19 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                         ..Default::default()
                     })
                 } else {
-                    intent.secure_mode.then(|| SecureModeConfig {
-                        enabled: true,
-                        ..Default::default()
+                    intent.secure_mode.then(|| {
+                        member
+                            .config_override
+                            .as_ref()
+                            .and_then(|config| config.secure_mode.clone())
+                            .map(|mut mode| {
+                                mode.enabled = true;
+                                mode
+                            })
+                            .unwrap_or(SecureModeConfig {
+                                enabled: true,
+                                ..Default::default()
+                            })
                     })
                 },
                 managed_credentials: if intent.secure_mode && !temporary {

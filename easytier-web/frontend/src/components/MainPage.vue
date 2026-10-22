@@ -128,6 +128,27 @@ const enrollCommand = computed(() => {
     return `easytier-core --config-server ${proto}://${host}:${port}/${encodeURIComponent(token)}`;
 });
 
+const installPlatform = ref('windows');
+const installPlatforms = [{ label: 'Windows x64', value: 'windows' }, { label: 'Linux x86_64', value: 'linux' }];
+const installCommand = computed(() => {
+    if (!enrollInfo.value?.config_server_public_url?.startsWith('wss://')) return '';
+    const selected = activeTokens.value.find(token => token.id === selectedTokenId.value);
+    if (!selected) return '';
+    const base = enrollInfo.value.config_server_public_url.replace(/\/$/, '');
+    const url = `${base}/${encodeURIComponent(selected.token)}`;
+    const origin = new URL(base.replace(/^wss:/, 'https:')).origin;
+    const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
+    if (installPlatform.value === 'linux') {
+        return `f=$(mktemp); curl -fsSL ${quote(origin + '/install/easytier.sh')} -o "$f" && sudo bash "$f" ${quote(url)}; rm -f -- "$f"`;
+    }
+    const psQuote = (text: string) => "'" + text.replace(/'/g, "''") + "'";
+    return `$f=Join-Path $env:TEMP ([guid]::NewGuid().ToString()+'.ps1'); Invoke-WebRequest -UseBasicParsing ${psQuote(origin + '/install/easytier.ps1')} -OutFile $f; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -ConfigUrl ${psQuote(url)} } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }`;
+});
+const copyInstallCommand = async () => {
+    try { await navigator.clipboard.writeText(installCommand.value); toast.add({ severity: 'success', summary: t('web.common.confirm'), life: 1500 }); }
+    catch { toast.add({ severity: 'error', summary: '请选中并复制命令', life: 3000 }); }
+};
+
 const loadDeviceTokens = async () => {
     try {
         deviceTokens.value = await api.list_device_tokens();
@@ -323,7 +344,7 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                         severity="secondary" outlined size="small" class="enroll-button"
                         :aria-label="t('web.console.enroll_title')"
                         @click="toggleEnrollBell" />
-                    <Popover ref="enrollBell" appendTo="body" style="min-width: 34rem">
+                    <Popover ref="enrollBell" appendTo="body" style="width: min(48rem, 92vw)">
                         <div class="flex flex-col gap-2">
                             <span class="font-semibold">{{ t('web.console.enroll_title') }}</span>
                             <p class="text-sm muted m-0">{{ t('web.console.enroll_hint') }}</p>
@@ -367,6 +388,14 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                                         </div>
                                     </div>
                                     <p class="text-xs muted m-0">{{ t('web.console.device_token_hint') }}</p>
+                                    <section v-if="installCommand" class="flex flex-col gap-2 mt-2 border-t border-surface pt-2" data-testid="one-command-install">
+                                        <strong>安装并登记设备</strong>
+                                        <Select v-model="installPlatform" :options="installPlatforms" optionLabel="label" optionValue="value" aria-label="安装系统" />
+                                        <p class="text-xs muted m-0">每台设备新建一个 Token。在管理员终端执行一次；登记后核对设备 UUID，再批准加入网络。命令包含凭据，请勿转发到公开位置。</p>
+                                        <code class="mono-value p-2 rounded text-xs" style="white-space: pre-wrap; overflow-wrap: anywhere; max-width: min(44rem, 80vw)">{{ installCommand }}</code>
+                                        <Button label="复制安装命令" icon="pi pi-copy" size="small" @click="copyInstallCommand" />
+                                        <p class="text-xs muted m-0">复用官方系统服务；保留本地配置，管理页不在线时仍可启动。当前仅提供上述两个架构；升级使用固定版本维护流程。</p>
+                                    </section>
                                 </div>
                             </template>
                         </div>

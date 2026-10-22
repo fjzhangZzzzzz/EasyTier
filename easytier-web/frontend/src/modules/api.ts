@@ -419,8 +419,8 @@ export class ApiClient {
         return { members: response.members, temporary_peers: response.temporary_peers ?? [] };
     }
 
-    public async add_network_members(network_id: string, device_ids: string[], temporary = false, ttl_seconds?: number): Promise<undefined> {
-        await this.client.post(`/networks/${network_id}/members`, { device_ids, temporary, ttl_seconds });
+    public async add_network_members(network_id: string, device_ids: string[], temporary = false, ttl_seconds?: number, long_lived = false): Promise<undefined> {
+        await this.client.post(`/networks/${network_id}/members`, { device_ids, temporary, ttl_seconds, long_lived });
     }
 
     public async get_network_acl_policy(network_id: string): Promise<AclPolicyInfo> {
@@ -533,9 +533,10 @@ export class ApiClient {
         return response.credentials;
     }
 
-    public async generate_credential(network_id: string, ttl_seconds: number, reusable = true, credential_id?: string): Promise<NetworkCredential> {
+    public async generate_credential(network_id: string, ttl_seconds: number, reusable = true, credential_id?: string, long_lived = false): Promise<NetworkCredential> {
         return await this.client.post<any, NetworkCredential>(`/networks/${network_id}/credentials`, {
             ttl_seconds,
+            long_lived,
             reusable,
             credential_id,
         });

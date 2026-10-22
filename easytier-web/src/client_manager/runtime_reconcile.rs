@@ -286,6 +286,21 @@ fn web_source_runtime_patch(
     desired: &NetworkConfig,
     support_manual_routes_patch: bool,
 ) -> anyhow::Result<Option<InstanceConfigPatch>> {
+    // 显式指定的可信节点身份不得被视为普通热更新而忽略；变更时重建实例。
+    if let Some(identity) = desired
+        .secure_mode
+        .as_ref()
+        .filter(|mode| mode.enabled && mode.local_private_key.is_some())
+    {
+        if current
+            .secure_mode
+            .as_ref()
+            .and_then(|mode| mode.local_private_key.as_ref())
+            != identity.local_private_key.as_ref()
+        {
+            return Ok(None);
+        }
+    }
     let mut current_base = hot_patch_base(current)?;
     let mut desired_base = hot_patch_base(desired)?;
     if desired.dev_name.is_none()
@@ -1554,6 +1569,24 @@ mod tests {
         let patch = web_source_runtime_patch(&current, &desired, false).expect("build patch");
 
         assert!(patch.is_none());
+    }
+
+    #[test]
+    fn explicit_trusted_identity_change_requires_recreation() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.secure_mode = Some(easytier::proto::common::SecureModeConfig {
+            enabled: true,
+            local_private_key: Some("mUuD5fsIm/ftvgS4WBAYFMNLqWX3qT9rnm4PrnOqb9s=".to_string()),
+            local_public_key: None,
+        });
+        let mut desired = current.clone();
+        desired.secure_mode.as_mut().unwrap().local_private_key =
+            Some("aEpz80FuYbaY4QLJizAIuIcK4TYsoSA9jHHCXCOQJoc=".to_string());
+        assert!(
+            web_source_runtime_patch(&current, &desired, false)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

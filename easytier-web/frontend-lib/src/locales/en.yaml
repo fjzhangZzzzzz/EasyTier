@@ -388,7 +388,7 @@ web:
     device_token_revoke: "Revoke token"
     device_token_hint: "Each token binds one device. Revocation stops configuration access, not saved network credentials; remove the network member separately. Disable username fallback with --disallow-username-tokens."
     enroll_copy: "Copy enrollment command"
-    enroll_token_note: "The path at the end is the enrollment token (your username). Enrolled devices show up in the device list."
+    enroll_token_note: "The path at the end is the enrollment token (a device token). Enrolled devices show up in the device list."
     enroll_webhook_note: "This console issues enrollment tokens through an external auth system; replace the username at the end with the token it assigned."
     blocked_devices: "Blocked Devices"
     blocked_empty: "No blocked devices."

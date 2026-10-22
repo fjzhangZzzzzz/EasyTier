@@ -837,7 +837,7 @@ test('Manual peer public keys survive settings save, reload and credential expor
 });
 
 
-test('ordinary terminals default to 180 days and near-expiry members are clearly listed', async t => {
+test('ordinary terminals default to explicit long-lived independent credentials and list finite expiry warnings', async t => {
     const { page, state } = await open(t, '/h/networks/network-0', {}, state => {
         state.networks[0].secure_mode = true;
         Object.assign(state.members[0], { temporary: true, credential_expiry_unix: Math.floor(Date.now() / 1000) + 7 * 86400 });
@@ -851,5 +851,20 @@ test('ordinary terminals default to 180 days and near-expiry members are clearly
     await page.getByRole('row').filter({ hasText: 'Added device' }).waitFor();
     const request = state.writes.find(write => write.method === 'POST' && write.path.endsWith('/members')).payload;
     assert.equal(request.temporary, true);
-    assert.equal(request.ttl_seconds, 180 * 86400);
+    assert.equal(request.long_lived, true);
+    assert.equal(request.ttl_seconds, undefined);
+});
+
+test('enrollment offers a pinned installer for Windows and Linux using only the selected device token', async t => {
+    const { page } = await open(t, '/h', {}, state => { state.publicConfigUrl = 'wss://et.example.test/config'; });
+    await page.getByRole('button', { name: 'Device Enrollment', exact: true }).click();
+    const panel = page.getByTestId('one-command-install');
+    await panel.waitFor();
+    assert.match(await panel.locator('code').textContent(), /https:\/\/et.example.test\/install\/easytier.ps1/);
+    assert.match(await panel.locator('code').textContent(), /wss:\/\/et.example.test\/config\/test-device-token/);
+    await page.getByRole('combobox', { name: '安装系统' }).click();
+    await page.getByRole('option', { name: 'Linux x86_64' }).click();
+    assert.match(await panel.locator('code').textContent(), /sudo bash/);
+    assert.match(await panel.locator('code').textContent(), /https:\/\/et.example.test\/install\/easytier.sh/);
+    assert.equal(await panel.getByRole('button', { name: '复制安装命令' }).count(), 1);
 });

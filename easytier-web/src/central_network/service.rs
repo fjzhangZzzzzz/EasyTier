@@ -30,6 +30,25 @@ use crate::{
 
 const TEMPORARY_MEMBER_DEFAULT_TTL_SECONDS: u32 = 7 * 24 * 3600;
 const MAX_CREDENTIAL_TTL_SECONDS: u32 = 365 * 24 * 3600;
+/// 长期策略的协议截止时间：2100-01-01 UTC；保留官方绝对期限格式。
+pub const LONG_LIVED_EXPIRY_UNIX: i64 = 4_102_444_800;
+
+fn credential_expiry(ttl: u32, long_lived: bool) -> Result<i64, CentralNetworkServiceError> {
+    if long_lived {
+        if ttl != 0 {
+            return Err(CentralNetworkServiceError::Invalid(
+                "long_lived and finite TTL are mutually exclusive".into(),
+            ));
+        }
+        return Ok(LONG_LIVED_EXPIRY_UNIX);
+    }
+    if !(1..=MAX_CREDENTIAL_TTL_SECONDS).contains(&ttl) {
+        return Err(CentralNetworkServiceError::Invalid(
+            "credential TTL must be between 1 second and 365 days".into(),
+        ));
+    }
+    Ok(chrono::Utc::now().timestamp() + i64::from(ttl))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CentralNetworkServiceError {
@@ -111,6 +130,8 @@ pub struct AddMembersReq {
     #[serde(default)]
     pub temporary: bool,
     pub ttl_seconds: Option<u32>,
+    #[serde(default)]
+    pub long_lived: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -122,7 +143,10 @@ pub struct UpdateMemberReq {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenerateCredentialReq {
+    #[serde(default)]
     pub ttl_seconds: u32,
+    #[serde(default)]
+    pub long_lived: bool,
     pub credential_id: Option<String>,
     #[serde(default = "default_true")]
     pub reusable: bool,
@@ -627,14 +651,23 @@ impl CentralNetworkService {
                 "temporary members require secure mode".into(),
             ));
         }
-        let ttl = request
-            .ttl_seconds
-            .unwrap_or(TEMPORARY_MEMBER_DEFAULT_TTL_SECONDS);
-        if request.temporary && !(1..=MAX_CREDENTIAL_TTL_SECONDS).contains(&ttl) {
+        if request.long_lived && !request.temporary {
             return Err(CentralNetworkServiceError::Invalid(
-                "temporary member TTL must be between 1 second and 365 days".into(),
+                "long_lived requires individual credentials".into(),
             ));
         }
+        let expiry = if request.temporary {
+            credential_expiry(
+                request.ttl_seconds.unwrap_or(if request.long_lived {
+                    0
+                } else {
+                    TEMPORARY_MEMBER_DEFAULT_TTL_SECONDS
+                }),
+                request.long_lived,
+            )?
+        } else {
+            0
+        };
         for raw_device_id in request.device_ids {
             let device_id = Uuid::parse_str(&raw_device_id).map_err(|_| {
                 CentralNetworkServiceError::Invalid(format!("invalid device id: {raw_device_id}"))
@@ -657,7 +690,7 @@ impl CentralNetworkService {
                 intent.credentials.push(NetworkCredentialIntent {
                     id: credential_id.clone(),
                     secret: random_secret(),
-                    expiry_unix: chrono::Utc::now().timestamp() + i64::from(ttl),
+                    expiry_unix: expiry,
                     grant: CredentialGrant {
                         acl_groups: vec![member_group_name(member_id)],
                         allow_relay: false,
@@ -748,6 +781,13 @@ impl CentralNetworkService {
         let _mutation = self.mutation_lock.lock().await;
         let mut intent = self.load(user_id, network_id).await?;
         let position = member_position(&intent, device_id)?;
+        let mut config = config;
+        if intent.members[position].credential_id.is_none() && config.secure_mode.is_none() {
+            config.secure_mode = intent.members[position]
+                .config_override
+                .as_ref()
+                .and_then(|old| old.secure_mode.clone());
+        }
         intent.members[position].config_override = Some(config);
         sync_member_credential_proxy_cidrs(&mut intent, position)?;
         self.persist(intent).await?;
@@ -763,7 +803,19 @@ impl CentralNetworkService {
         let _mutation = self.mutation_lock.lock().await;
         let mut intent = self.load(user_id, network_id).await?;
         let position = member_position(&intent, device_id)?;
-        intent.members[position].config_override = None;
+        let identity = intent.members[position]
+            .config_override
+            .as_ref()
+            .and_then(|old| old.secure_mode.clone());
+        intent.members[position].config_override =
+            if intent.members[position].credential_id.is_none() {
+                identity.map(|secure_mode| NetworkConfig {
+                    secure_mode: Some(secure_mode),
+                    ..Default::default()
+                })
+            } else {
+                None
+            };
         sync_member_credential_proxy_cidrs(&mut intent, position)?;
         self.persist(intent).await?;
         Ok(())
@@ -812,11 +864,7 @@ impl CentralNetworkService {
                 "credentials require secure mode".into(),
             ));
         }
-        if !(1..=MAX_CREDENTIAL_TTL_SECONDS).contains(&request.ttl_seconds) {
-            return Err(CentralNetworkServiceError::Invalid(
-                "credential TTL must be between 1 second and 365 days".into(),
-            ));
-        }
+        let expiry = credential_expiry(request.ttl_seconds, request.long_lived)?;
         let credential_id = request
             .credential_id
             .filter(|id| !id.trim().is_empty())
@@ -833,7 +881,7 @@ impl CentralNetworkService {
         intent.credentials.push(NetworkCredentialIntent {
             id: credential_id.clone(),
             secret: random_secret(),
-            expiry_unix: chrono::Utc::now().timestamp() + i64::from(request.ttl_seconds),
+            expiry_unix: expiry,
             grant: CredentialGrant {
                 acl_groups: Vec::new(),
                 allow_relay: false,
@@ -1069,8 +1117,27 @@ impl CentralNetworkService {
 
     async fn persist(
         &self,
-        intent: CentralNetworkIntent,
+        mut intent: CentralNetworkIntent,
     ) -> Result<(), CentralNetworkServiceError> {
+        if intent.secure_mode {
+            for member in &mut intent.members {
+                if member.credential_id.is_some() {
+                    continue;
+                }
+                let config = member
+                    .config_override
+                    .get_or_insert_with(NetworkConfig::default);
+                let mut mode = config.secure_mode.clone().unwrap_or_default();
+                mode.enabled = true;
+                config.secure_mode = Some(
+                    easytier_core::config::normalize_secure_mode_config(mode).map_err(|_| {
+                        CentralNetworkServiceError::Invalid(
+                            "invalid trusted member identity".into(),
+                        )
+                    })?,
+                );
+            }
+        }
         let user_id = intent.user_id;
         self.db.save_central_network_intent(intent).await?;
         self.publish_user(user_id).await;
@@ -1331,6 +1398,133 @@ mod tests {
 
     use super::*;
     use crate::{FeatureFlags, client_manager::HeartbeatPolicy, db::DeviceHeartbeatRecord};
+
+    #[test]
+    fn long_lived_credential_is_explicit_and_finite_ttl_stays_bounded() {
+        assert_eq!(credential_expiry(0, true).unwrap(), LONG_LIVED_EXPIRY_UNIX);
+        assert!(credential_expiry(1, true).is_err());
+        assert!(credential_expiry(0, false).is_err());
+        assert!(credential_expiry(MAX_CREDENTIAL_TTL_SECONDS + 1, false).is_err());
+        assert!(credential_expiry(60, false).unwrap() < LONG_LIVED_EXPIRY_UNIX);
+        let legacy: AddMembersReq = serde_json::from_value(
+            serde_json::json!({"device_ids": [Uuid::new_v4()], "temporary": true}),
+        )
+        .unwrap();
+        assert!(!legacy.long_lived);
+    }
+
+    #[tokio::test]
+    async fn long_lived_member_remains_individual_and_removal_revokes_only_its_credential() {
+        let (service, user_id, _) = service().await;
+        let device = Uuid::new_v4();
+        register_device(&service, user_id, device).await;
+        let mut settings = standalone_settings();
+        settings.secure_mode = true;
+        let network = service
+            .create_network(user_id, settings, None)
+            .await
+            .unwrap();
+        let id = Uuid::parse_str(&network.network_id).unwrap();
+        service
+            .add_members(
+                user_id,
+                id,
+                AddMembersReq {
+                    device_ids: vec![device.to_string()],
+                    temporary: true,
+                    ttl_seconds: None,
+                    long_lived: true,
+                },
+            )
+            .await
+            .unwrap();
+        let intent = service.load(user_id, id).await.unwrap();
+        assert_eq!(intent.credentials.len(), 1);
+        let credential = &intent.credentials[0];
+        assert_eq!(credential.expiry_unix, LONG_LIVED_EXPIRY_UNIX);
+        assert!(!credential.grant.allow_relay);
+        assert!(!credential.grant.reusable);
+        assert!(credential.grant.allowed_proxy_cidrs.is_empty());
+        let compiled = crate::central_network::compiler::compile(&intent).unwrap();
+        let config = &compiled.members[0].network_config;
+        assert!(config.network_secret.is_none());
+        assert!(config.managed_credentials.is_empty());
+        assert_eq!(
+            config
+                .secure_mode
+                .as_ref()
+                .unwrap()
+                .local_private_key
+                .as_ref(),
+            Some(&credential.secret)
+        );
+        service.remove_member(user_id, id, device).await.unwrap();
+        let intent = service.load(user_id, id).await.unwrap();
+        assert!(intent.members.is_empty());
+        assert!(intent.credentials.is_empty());
+    }
+
+    #[tokio::test]
+    async fn trusted_identity_survives_repeated_save_override_clear_and_new_service_load() {
+        let (service, user_id, _) = service().await;
+        let device = Uuid::new_v4();
+        register_device(&service, user_id, device).await;
+        let mut settings = standalone_settings();
+        settings.secure_mode = true;
+        let network = service
+            .create_network(user_id, settings, None)
+            .await
+            .unwrap();
+        let id = Uuid::parse_str(&network.network_id).unwrap();
+        service
+            .add_members(
+                user_id,
+                id,
+                AddMembersReq {
+                    device_ids: vec![device.to_string()],
+                    temporary: false,
+                    ttl_seconds: None,
+                    long_lived: false,
+                },
+            )
+            .await
+            .unwrap();
+        let before = service.load(user_id, id).await.unwrap();
+        let key = before.members[0]
+            .config_override
+            .as_ref()
+            .unwrap()
+            .secure_mode
+            .clone()
+            .unwrap();
+        assert!(key.local_private_key.is_some());
+        assert!(key.local_public_key.is_some());
+        service
+            .set_member_config(user_id, id, device, NetworkConfig::default())
+            .await
+            .unwrap();
+        service
+            .clear_member_config(user_id, id, device)
+            .await
+            .unwrap();
+        let after = service.load(user_id, id).await.unwrap();
+        let compiled = crate::central_network::compiler::compile(&after).unwrap();
+        assert_eq!(
+            compiled.members[0].network_config.secure_mode.as_ref(),
+            Some(&key)
+        );
+        service.persist(after).await.unwrap();
+        let reloaded = service.load(user_id, id).await.unwrap();
+        assert_eq!(
+            reloaded.members[0]
+                .config_override
+                .as_ref()
+                .unwrap()
+                .secure_mode
+                .as_ref(),
+            Some(&key)
+        );
+    }
 
     #[test]
     fn member_runtime_fields_use_exact_uuid_and_normalize_values() {
@@ -1794,6 +1988,7 @@ mod tests {
                 user_id,
                 id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: devices.iter().map(ToString::to_string).collect(),
                     temporary: false,
                     ttl_seconds: None,
@@ -1892,6 +2087,7 @@ mod tests {
                     user_id,
                     network_id,
                     AddMembersReq {
+                        long_lived: false,
                         device_ids: vec![device.to_string()],
                         temporary: false,
                         ttl_seconds: None,
@@ -1957,6 +2153,7 @@ mod tests {
                 user_id,
                 id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: devices.iter().map(ToString::to_string).collect(),
                     temporary: false,
                     ttl_seconds: None,
@@ -2136,6 +2333,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2191,6 +2389,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![replacement.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2224,6 +2423,7 @@ mod tests {
                 user_a,
                 Uuid::parse_str(&alpha.network_id).unwrap(),
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2244,6 +2444,7 @@ mod tests {
                 user_a,
                 Uuid::parse_str(&beta.network_id).unwrap(),
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2264,6 +2465,7 @@ mod tests {
                 user_b,
                 Uuid::parse_str(&other.network_id).unwrap(),
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2363,6 +2565,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2458,6 +2661,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![permanent_device.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2478,6 +2682,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![temporary_device.to_string()],
                     temporary: true,
                     ttl_seconds: Some(300),
@@ -2533,6 +2738,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: true,
                     ttl_seconds: Some(300),
@@ -2625,6 +2831,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: false,
                     ttl_seconds: None,
@@ -2708,6 +2915,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: true,
                     ttl_seconds: None,
@@ -2751,6 +2959,7 @@ mod tests {
                     user_id,
                     network_id,
                     AddMembersReq {
+                        long_lived: false,
                         device_ids: vec![valid_device.to_string(), Uuid::new_v4().to_string()],
                         temporary: false,
                         ttl_seconds: None,
@@ -2791,6 +3000,7 @@ mod tests {
                         user_id,
                         network_id,
                         AddMembersReq {
+                            long_lived: false,
                             device_ids: vec![first_device.to_string()],
                             temporary: false,
                             ttl_seconds: None,
@@ -2807,6 +3017,7 @@ mod tests {
                         user_id,
                         network_id,
                         AddMembersReq {
+                            long_lived: false,
                             device_ids: vec![second_device.to_string()],
                             temporary: false,
                             ttl_seconds: None,
@@ -2842,6 +3053,7 @@ mod tests {
                 user_id,
                 network_id,
                 AddMembersReq {
+                    long_lived: false,
                     device_ids: vec![device_id.to_string()],
                     temporary: true,
                     ttl_seconds: None,
@@ -3056,6 +3268,7 @@ mod tests {
                     user_id,
                     network_id,
                     AddMembersReq {
+                        long_lived: false,
                         device_ids: vec![device_id.to_string()],
                         temporary: false,
                         ttl_seconds: None,
@@ -3185,6 +3398,7 @@ mod tests {
                     user_id,
                     network_id,
                     AddMembersReq {
+                        long_lived: false,
                         device_ids: vec![device_id.to_string()],
                         temporary: is_temporary,
                         ttl_seconds: None,

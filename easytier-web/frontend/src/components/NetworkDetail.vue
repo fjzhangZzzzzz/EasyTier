@@ -110,18 +110,21 @@ const openAddMember = async () => {
     }
     selectedDevices.value = [];
     addTemporary.value = network.value?.secure_mode === true;
-    addTtlHours.value = 180 * 24;
+    addTtlHours.value = 0;
     addMemberVisible.value = true;
 };
 
 const addTemporary = ref(false);
-const addTtlHours = ref(180 * 24);
+const addTtlHours = ref(0);
 const addTtlOptions = [
+    { label: '长期有效，可撤销', value: 0 },
     { label: t('web.network_detail.ttl_24h'), value: 24 },
     { label: t('web.network_detail.ttl_7d'), value: 7 * 24 },
     { label: t('web.network_detail.ttl_30d'), value: 30 * 24 },
     { label: '180 天', value: 180 * 24 },
 ];
+
+const formatExpiry = (value: number) => value === 4102444800 ? '长期有效，可撤销' : new Date(value * 1000).toLocaleDateString();
 
 const expiringMembers = computed(() => (members.value ?? []).filter(member =>
     member.temporary && member.credential_expiry_unix != null
@@ -138,7 +141,8 @@ const addMembers = async () => {
             networkId.value,
             deviceIds,
             addTemporary.value,
-            addTemporary.value ? addTtlHours.value * 3600 : undefined,
+            addTemporary.value && addTtlHours.value !== 0 ? addTtlHours.value * 3600 : undefined,
+            addTemporary.value && addTtlHours.value === 0,
         );
         addMemberVisible.value = false;
         await loadAll();
@@ -991,7 +995,7 @@ const switchTab = async (tab: string) => {
                                     <Tag v-if="member.temporary" :value="t('web.network_detail.temporary_tag')" severity="secondary" />
                                     <span v-if="member.temporary && member.credential_expiry_unix"
                                         class="text-xs muted">{{ t('web.network_detail.expires_at') }}
-                                        {{ new Date(member.credential_expiry_unix * 1000).toLocaleDateString() }}</span>
+                                        {{ formatExpiry(member.credential_expiry_unix) }}</span>
                                     <Tag v-if="member.running === true" :value="t('web.network_detail.running')" severity="success" />
                                     <Tag v-else-if="member.running === false" :value="t('web.network_detail.stopped')" severity="warn" />
                                     <span v-if="member.runtime_virtual_ipv4" class="font-mono">{{ member.runtime_virtual_ipv4 }}</span>
@@ -1049,7 +1053,7 @@ const switchTab = async (tab: string) => {
                         </Column>
                         <Column :header="t('web.network_detail.credential_expiry')" style="width: 8rem">
                             <template #body="{ data }">
-                                <span v-if="data.credential_expiry_unix" class="muted">{{ new Date(data.credential_expiry_unix * 1000).toLocaleDateString() }}</span>
+                                <span v-if="data.credential_expiry_unix" class="muted">{{ formatExpiry(data.credential_expiry_unix) }}</span>
                                 <span v-else class="muted">—</span>
                             </template>
                         </Column>
@@ -1079,7 +1083,7 @@ const switchTab = async (tab: string) => {
                                     </span>
                                     <span v-if="peer.credential_expiry_unix" class="text-xs muted">
                                         · {{ t('web.network_detail.expires_at') }}
-                                        {{ new Date(peer.credential_expiry_unix * 1000).toLocaleDateString() }}
+                                        {{ formatExpiry(peer.credential_expiry_unix) }}
                                     </span>
                                     <Button :label="t('web.network_detail.locate_credential')" text size="small" severity="secondary"
                                         @click="locateCredential(peer.credential_id!)" />
@@ -1122,7 +1126,7 @@ const switchTab = async (tab: string) => {
                         </div>
                     </template></Column>
                     <Column :header="t('web.network_detail.credential_expiry')"><template #body="{ data }">
-                        {{ new Date(data.expiry_unix * 1000).toLocaleString() }}
+                        {{ formatExpiry(data.expiry_unix) }}
                     </template></Column>
                     <Column :header="t('web.network_detail.credential_online_devices')"><template #body="{ data }">
                         <span v-if="!data.online_peers?.length" class="text-500">—</span>
