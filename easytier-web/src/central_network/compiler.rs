@@ -159,6 +159,11 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                     Vec::new()
                 },
                 acl: acl.get(&member.id).cloned().flatten(),
+                // 普通访问终端默认不调整外部网络或系统 DNS；仍复用官方配置字段。
+                disable_upnp: temporary.then_some(true),
+                disable_ipv6: temporary.then_some(true),
+                enable_magic_dns: temporary.then_some(false),
+                enable_exit_node: temporary.then_some(false),
                 ..Default::default()
             };
             let network_config =
@@ -223,6 +228,11 @@ fn apply_member_override(
     merged.managed_credentials = base.managed_credentials;
     merged.acl = base.acl;
     merged.credential_file = None;
+    // 部分覆盖只改变指定项，不能让缺失字段重新启用官方默认 UPnP。
+    merged.disable_upnp = merged.disable_upnp.or(base.disable_upnp);
+    merged.disable_ipv6 = merged.disable_ipv6.or(base.disable_ipv6);
+    merged.enable_magic_dns = merged.enable_magic_dns.or(base.enable_magic_dns);
+    merged.enable_exit_node = merged.enable_exit_node.or(base.enable_exit_node);
     merged
 }
 
@@ -1180,6 +1190,36 @@ mod tests {
             .unwrap();
         assert!(group.members.is_empty());
         assert!(group.declares.is_empty());
+    }
+
+    #[test]
+    fn ordinary_member_safety_defaults_survive_partial_override() {
+        let mut candidate = intent();
+        for overridden in [false, true] {
+            if overridden {
+                candidate
+                    .members
+                    .iter_mut()
+                    .find(|m| m.device_id == "device-b")
+                    .unwrap()
+                    .config_override = Some(NetworkConfig {
+                    mtu: Some(1300),
+                    ..Default::default()
+                });
+            }
+            let compiled = compile(&candidate).unwrap();
+            let config = &compiled
+                .members
+                .iter()
+                .find(|m| m.device_id == "device-b")
+                .unwrap()
+                .network_config;
+            assert_eq!(config.disable_upnp, Some(true));
+            assert_eq!(config.disable_ipv6, Some(true));
+            assert_eq!(config.enable_magic_dns, Some(false));
+            assert_eq!(config.enable_exit_node, Some(false));
+            assert_eq!(config.network_secret, None);
+        }
     }
 
     #[test]
