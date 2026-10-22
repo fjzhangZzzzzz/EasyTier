@@ -864,6 +864,11 @@ impl CentralNetworkService {
                 "credentials require secure mode".into(),
             ));
         }
+        if request.long_lived && request.reusable {
+            return Err(CentralNetworkServiceError::Invalid(
+                "long-lived credentials must be single-device".into(),
+            ));
+        }
         let expiry = credential_expiry(request.ttl_seconds, request.long_lived)?;
         let credential_id = request
             .credential_id

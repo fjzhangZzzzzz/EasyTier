@@ -868,3 +868,12 @@ test('enrollment offers a pinned installer for Windows and Linux using only the 
     assert.match(await panel.locator('code').textContent(), /https:\/\/et.example.test\/install\/easytier.sh/);
     assert.equal(await panel.getByRole('button', { name: '复制安装命令' }).count(), 1);
 });
+
+test('offline trusted administrators keep revocation convergence visibly pending', async t => {
+    const { page } = await open(t, '/h/networks/network-0', {}, state => {
+        state.networks[0].secure_mode = true;
+        Object.assign(state.members[0], { temporary: false, online: false });
+    });
+    await page.getByTestId('revocation-sync-warning').waitFor();
+    assert.match(await page.getByTestId('revocation-sync-warning').textContent(), /所有管理节点重新同步/);
+});

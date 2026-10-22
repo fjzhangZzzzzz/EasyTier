@@ -139,10 +139,10 @@ const installCommand = computed(() => {
     const origin = new URL(base.replace(/^wss:/, 'https:')).origin;
     const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
     if (installPlatform.value === 'linux') {
-        return `f=$(mktemp); curl -fsSL ${quote(origin + '/install/easytier.sh')} -o "$f" && sudo bash "$f" ${quote(url)}; rm -f -- "$f"`;
+        return `f=$(mktemp); curl -fsSL ${quote(origin + '/install/easytier.sh')} -o "$f" && sudo bash "$f" ${quote(url)}; r=$?; rm -f -- "$f"; (exit "$r")`;
     }
     const psQuote = (text: string) => "'" + text.replace(/'/g, "''") + "'";
-    return `$f=Join-Path $env:TEMP ([guid]::NewGuid().ToString()+'.ps1'); Invoke-WebRequest -UseBasicParsing ${psQuote(origin + '/install/easytier.ps1')} -OutFile $f; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -ConfigUrl ${psQuote(url)} } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }`;
+    return `& { $ErrorActionPreference='Stop'; $f=Join-Path $env:TEMP ([guid]::NewGuid().ToString()+'.ps1'); Invoke-WebRequest -UseBasicParsing ${psQuote(origin + '/install/easytier.ps1')} -OutFile $f; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -ConfigUrl ${psQuote(url)} } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue } }`;
 });
 const copyInstallCommand = async () => {
     try { await navigator.clipboard.writeText(installCommand.value); toast.add({ severity: 'success', summary: t('web.common.confirm'), life: 1500 }); }

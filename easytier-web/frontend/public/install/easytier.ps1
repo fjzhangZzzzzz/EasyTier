@@ -42,11 +42,18 @@ try {
     @{machine_id=$machineId;version=$version;service=$serviceName} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $state 'installation.json') -Encoding UTF8
     $cli = Join-Path $release 'easytier-cli.exe'
     # 官方 CLI 输出含 Token，禁止透传到终端或持续日志。
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $installOutput = & $cli service --name $serviceName install --core-path (Join-Path $release 'easytier-core.exe') --service-work-dir $state --core-args --config-server $ConfigUrl --config-dir (Join-Path $state 'config') --machine-id $machineId --disable-env-parsing --rpc-portal 127.0.0.1:15989 2>&1
-    if ($LASTEXITCODE -ne 0) { throw '官方服务注册失败；保留受限目录供排障。' }
+    $installCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedPreference
+    if ($installCode -ne 0) { throw '官方服务注册失败；保留受限目录供排障。' }
     $installOutput = $null
+    $ErrorActionPreference = 'Continue'
     $startOutput = & $cli service --name $serviceName start 2>&1
-    if ($LASTEXITCODE -ne 0) { throw '服务启动失败；保留身份供排障。' }
+    $startCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedPreference
+    if ($startCode -ne 0) { throw '服务启动失败；保留身份供排障。' }
     $startOutput = $null
     (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
     Write-Output ('安装完成。设备 UUID：' + $machineId + '；请在管理页核对并批准加入网络。')

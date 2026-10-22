@@ -126,6 +126,8 @@ const addTtlOptions = [
 
 const formatExpiry = (value: number) => value === 4102444800 ? '长期有效，可撤销' : new Date(value * 1000).toLocaleDateString();
 
+const offlineTrustedMembers = computed(() => network.value?.secure_mode ? (members.value ?? []).filter(member => !member.temporary && !member.online) : []);
+
 const expiringMembers = computed(() => (members.value ?? []).filter(member =>
     member.temporary && member.credential_expiry_unix != null
     && member.credential_expiry_unix <= Date.now() / 1000 + 14 * 24 * 3600));
@@ -892,6 +894,11 @@ const switchTab = async (tab: string) => {
         <div v-if="network === undefined && !loadError" class="console-panel loading-rows">
             <Skeleton v-for="i in 4" :key="i" height="2rem" />
         </div>
+
+        <Message v-if="offlineTrustedMembers.length" severity="warn" :closable="false" data-testid="revocation-sync-warning">
+            存在离线可信管理节点：{{ offlineTrustedMembers.map(member => member.hostname ?? member.device_id).join('、') }}。
+            删除终端后，仍持有旧配置的节点可能继续认可旧凭据；所有管理节点重新同步并验证拒绝访问后，撤权才算完成。
+        </Message>
 
         <Message v-if="expiringMembers.length" severity="warn" :closable="false" data-testid="credential-expiry-warning">
             网络凭据已到期或将在 14 天内到期：{{ expiringMembers.map(member => member.hostname ?? member.device_id).join('、') }}。
