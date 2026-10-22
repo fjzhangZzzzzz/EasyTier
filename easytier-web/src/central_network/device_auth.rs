@@ -459,6 +459,66 @@ mod tests {
         assert!(config_path.exists());
         child.kill().await.unwrap();
         child.wait().await.unwrap();
+        drop(manager);
+
+        // 切断控制端后，用官方 Core 从刚落盘的同一目录冷启动。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let rpc = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let unavailable_control = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let offline_url = format!(
+            "udp://{}/{}",
+            unavailable_control.local_addr().unwrap(),
+            token.token
+        );
+        let mut offline = tokio::process::Command::new(&executable)
+            .args([
+                "--config-server",
+                &offline_url,
+                "--machine-id",
+                &machine.to_string(),
+                "--config-dir",
+                directory.path().to_str().unwrap(),
+                "--no-listener",
+                "--rpc-portal",
+                &rpc,
+                "--hostname",
+                "official-work-offline",
+                "--console-log-level",
+                "error",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let cli = std::path::Path::new(&executable).with_file_name(if cfg!(windows) {
+            "easytier-cli.exe"
+        } else {
+            "easytier-cli"
+        });
+        wait_until(|| async {
+            let output = tokio::process::Command::new(&cli)
+                .args([
+                    "--rpc-portal",
+                    &rpc,
+                    "--instance-id",
+                    &instance.to_string(),
+                    "--output",
+                    "json",
+                    "node",
+                    "config",
+                ])
+                .kill_on_drop(true)
+                .output()
+                .await
+                .unwrap();
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&key)
+        })
+        .await;
+        assert!(offline.try_wait().unwrap().is_none());
+        offline.kill().await.unwrap();
+        offline.wait().await.unwrap();
     }
 
     #[tokio::test]
